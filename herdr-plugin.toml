@@ -1,0 +1,63 @@
+id = "beyondlex.herdr-recent-navigator"
+name = "Herdr Recent Navigator"
+version = "0.1.0"
+description = "Recent workspaces, tabs, panes, and AI agents switcher for Herdr."
+min_herdr_version = "0.7.4"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "open"
+title = "Open Navigator"
+description = "Open the recent items navigator"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open"]
+
+[[actions]]
+id = "focus-workspaces"
+title = "Quick Focus: Workspaces"
+description = "Open navigator focused on Workspaces tab"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "workspaces"]
+
+[[actions]]
+id = "focus-tabs"
+title = "Quick Focus: Tabs"
+description = "Open navigator focused on Tabs tab"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "tabs"]
+
+[[actions]]
+id = "focus-agents"
+title = "Quick Focus: Agents"
+description = "Open navigator focused on Agents tab"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "agents"]
+
+[[actions]]
+id = "focus-panes"
+title = "Quick Focus: Panes"
+description = "Open navigator focused on Panes tab"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "panes"]
+
+[[events]]
+on = "workspace.focused"
+command = ["./target/release/herdr-recent-navigator", "track"]
+
+[[events]]
+on = "pane.focused"
+command = ["./target/release/herdr-recent-navigator", "track"]
+
+[[events]]
+on = "tab.focused"
+command = ["./target/release/herdr-recent-navigator", "track"]
+
+[[panes]]
+id = "navigator"
+title = "Recent Navigator"
+placement = "popup"
+command = ["./target/release/herdr-recent-navigator"]

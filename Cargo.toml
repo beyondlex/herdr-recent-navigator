@@ -1,0 +1,32 @@
+[package]
+name = "herdr-recent-navigator"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["mock"]
+mock = []
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nucleo-matcher = "0.3"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = "0.4"
+fs2 = "0.4"
+unicode-width = "0.2"
+log = "0.4.33"
+env_logger = "0.11.11"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[dev-dependencies]
+once_cell = "1.21.4"
+serial_test = "3.5.0"
+tempfile = "3.27.0"
