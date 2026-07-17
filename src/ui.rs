@@ -304,9 +304,9 @@ fn render_column_header(
     let style = Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD);
     let (labels, col_start, constraints): (&[&str], usize, &[Constraint]) = match category {
         CategoryTab::Panes => (&["Pane", "Tab", "Workspace", "Agent"], 1, &col_layout::PANE),
-        CategoryTab::Tabs => (&["Tab", "Workspace"], 1, &col_layout::TAB),
+        CategoryTab::Tabs => (&["Tab", "Workspace", "Agent"], 1, &col_layout::TAB),
         CategoryTab::Agents => (&["Agent", "Tab", "Workspace"], 2, &col_layout::AGENT),
-        CategoryTab::Workspaces => return,
+        CategoryTab::Workspaces => (&["Workspace", "Agent"], 1, &col_layout::WORKSPACE),
     };
     let cols = Layout::horizontal(constraints)
         .flex(Flex::Start)
@@ -496,7 +496,8 @@ mod col_layout {
         Constraint::Percentage(28),
         Constraint::Percentage(22),
     ];
-    pub const TAB: [Constraint; 3] = [IDX, Constraint::Percentage(50), Constraint::Percentage(50)];
+    pub const DOTS: Constraint = Constraint::Length(8);
+    pub const TAB: [Constraint; 4] = [IDX, Constraint::Percentage(45), Constraint::Percentage(45), DOTS];
     pub const AGENT: [Constraint; 5] = [
         IDX,
         ICON,
@@ -504,7 +505,7 @@ mod col_layout {
         Constraint::Percentage(32),
         Constraint::Percentage(36),
     ];
-    pub const WORKSPACE: [Constraint; 2] = [IDX, Constraint::Fill(1)];
+    pub const WORKSPACE: [Constraint; 3] = [IDX, Constraint::Fill(1), DOTS];
 }
 
 fn col_spans(text: &str, col: &Rect, query: &str, base: Style, hl: Style) -> Vec<Span<'static>> {
@@ -530,22 +531,19 @@ fn row_workspace(i: usize, name: &str, a: &[AgentStatus], ctx: &RowCtx) -> ListI
         .flex(Flex::Start)
         .split(Rect::new(0, 0, rw, 1));
 
-    let name_w = cols[1].width as usize;
-    let dots_w: usize = if a.is_empty() { 0 } else { a.len() * 2 + 2 };
-    let name_max = name_w.saturating_sub(dots_w + 1);
-    let display = truncate_to(name, name_max);
     let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
-    sp.extend(highlight_text(&display, ctx.query, ns, hl));
+    sp.extend(col_spans(name, &cols[1], ctx.query, ns, hl));
+    let dots_w = a.len() * 2;
+    let dots_col_w = cols[2].width as usize;
+    let pad = dots_col_w.saturating_sub(dots_w);
     if !a.is_empty() {
-        let content_w = UnicodeWidthStr::width(display.as_str());
-        let pad = name_w.saturating_sub(dots_w + content_w + 1);
-        if pad > 0 {
-            sp.push(Span::raw(" ".repeat(pad)));
-        }
         for st in a {
             let (dot, dot_style) = state_dot(st, ctx.p);
             sp.push(Span::styled(format!(" {dot}"), dot_style));
         }
+    }
+    if pad > 0 {
+        sp.push(Span::raw(" ".repeat(pad)));
     }
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
@@ -563,20 +561,17 @@ fn row_tab(i: usize, name: &str, ws: &str, a: &[AgentStatus], ctx: &RowCtx) -> L
     let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
     sp.extend(col_spans(name, &cols[1], ctx.query, ns, hl));
     sp.extend(col_spans(ws, &cols[2], ctx.query, cs, hl));
+    let dots_w = a.len() * 2;
+    let dots_col_w = cols[3].width as usize;
+    let pad = dots_col_w.saturating_sub(dots_w);
     if !a.is_empty() {
-        let dots_w = a.len() * 2;
-        let pad = 2;
-        let remaining = ctx
-            .rw
-            .saturating_sub(sp.iter().map(|s| s.width()).sum::<usize>());
-        let pad_w = remaining.saturating_sub(dots_w + pad);
-        if pad_w > 0 {
-            sp.push(Span::raw(" ".repeat(pad_w)));
-        }
         for st in a {
             let (dot, dot_style) = state_dot(st, ctx.p);
             sp.push(Span::styled(format!(" {dot}"), dot_style));
         }
+    }
+    if pad > 0 {
+        sp.push(Span::raw(" ".repeat(pad)));
     }
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
