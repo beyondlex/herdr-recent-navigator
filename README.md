@@ -86,13 +86,13 @@ Add to your Herdr config:
 
 ```toml
 [[keys.command]]
-key = "prefix+u"
+key = "cmd+e"
 type = "plugin_action"
 command = "beyondlex.herdr-recent-navigator.focus-workspaces"
 description = "Open Navigator: Workspace"
 
 
-# Optional: Focus Tab/Agent when open navigator
+# Optional: Focus Tabs/Panes/Agents when open navigator
 [[keys.command]]
 key = "cmd+i"
 type = "plugin_action"
@@ -100,9 +100,15 @@ command = "beyondlex.herdr-recent-navigator.focus-tabs"
 description = "Open Navigator: Tab"
 
 [[keys.command]]
-key = "cmd+e"
+key = "prefix+u"
 type = "plugin_action"
 command = "beyondlex.herdr-recent-navigator.focus-panes"
+description = "Open Navigator: Pane"
+
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "beyondlex.herdr-recent-navigator.focus-agents"
 description = "Open Navigator: Agent"
 ```
 
