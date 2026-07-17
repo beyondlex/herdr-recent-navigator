@@ -24,6 +24,13 @@ navigable by keyboard.
 - **Four category tabs**: Workspaces, Tabs, Agents, Panes — switch with `Tab`
 - **MRU ordering**: most recently focused items float to the top
 - **Fuzzy search**: type to filter any category
+- **Customizable quick-jump shortcuts**: Bind separate keys to open each tab
+  directly — e.g. `prefix+u` → Workspaces, `cmd+i` → Tabs,
+  `cmd+e` → Agents, `cmd+shift+n` → Panes
+- **Cross-category filtering**: Open the Agents tab and fuzzy-filter by
+  workspace name to find all agents under a specific workspace; similarly
+  filter Panes by tab name, or Tabs by workspace — no need to navigate
+  through the tree
 - **Live agent status**: Working agents show a braille spinner; status updates
   in real time without reopening
 - **Herdr-native colors**: TokyoNight palette, consistent with the Herdr UI
