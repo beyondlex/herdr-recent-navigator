@@ -115,6 +115,7 @@ command = ["herdr-recent-navigator", "track"]
 id = "navigator"
 title = "Recent Navigator"
 placement = "popup"
+width = "60%"
 command = ["herdr-recent-navigator"]
 PLUGIN_EOF
 

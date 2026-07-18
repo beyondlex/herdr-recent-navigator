@@ -158,7 +158,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
 
     // Minimum terminal size guard
     if !min_terminal_size(area) {
-        let msg = "Terminal too small — resize to at least 30×8";
+        let msg = "Terminal too small — resize to at least 20×4";
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(p.red))))
                 .style(Style::default().bg(p.surface_dim)),
@@ -217,12 +217,19 @@ fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, nar
     let titles: Vec<Line> = tabs
         .iter()
         .map(|tab| {
-            Line::from(Span::styled(
-                format!(" {} ", tab_label(tab, narrow)),
-                Style::default().fg(p.accent),
-            ))
+            let label = if narrow {
+                format!("{}", tab_label(tab, narrow))
+            } else {
+                format!(" {} ", tab_label(tab, narrow))
+            };
+            Line::from(Span::styled(label, Style::default().fg(p.accent)))
         })
         .collect();
+    let divider = if narrow {
+        Span::raw(" ").style(Style::default().fg(p.overlay0))
+    } else {
+        Span::raw("|").style(Style::default().fg(p.overlay0))
+    };
     frame.render_widget(
         Tabs::new(titles)
             .block(
@@ -236,7 +243,7 @@ fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, nar
                     .bg(p.accent)
                     .add_modifier(Modifier::BOLD),
             )
-            .divider(Span::raw("|").style(Style::default().fg(p.overlay0)))
+            .divider(divider)
             .select(sel_idx),
         area,
     );

@@ -1,6 +1,6 @@
 id = "beyondlex.herdr-recent-navigator"
 name = "Herdr Recent Navigator"
-version = "0.3.0"
+version = "0.4.0"
 description = "Recent workspaces, tabs, panes, and AI agents switcher for Herdr."
 min_herdr_version = "0.7.4"
 platforms = ["macos", "linux"]
@@ -61,4 +61,5 @@ command = ["./target/release/herdr-recent-navigator", "track"]
 id = "navigator"
 title = "Recent Navigator"
 placement = "popup"
+width = "60%"
 command = ["./target/release/herdr-recent-navigator"]

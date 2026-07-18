@@ -91,7 +91,7 @@ pub fn tab_label(tab: &CategoryTab, narrow: bool) -> &'static str {
 // ── Terminal size guard ──
 
 pub fn min_terminal_size(area: Rect) -> bool {
-    area.width >= 30 && area.height >= 8
+    area.width >= 20 && area.height >= 4
 }
 
 #[cfg(test)]
@@ -216,19 +216,19 @@ mod tests {
 
     #[test]
     fn test_min_terminal_size_too_small() {
-        let small = Rect::new(0, 0, 20, 5);
+        let small = Rect::new(0, 0, 19, 5);
         assert!(!min_terminal_size(small));
     }
 
     #[test]
     fn test_min_terminal_size_ok() {
-        let ok = Rect::new(0, 0, 80, 24);
+        let ok = Rect::new(0, 0, 20, 4);
         assert!(min_terminal_size(ok));
     }
 
     #[test]
     fn test_min_terminal_size_exact_boundary() {
-        let boundary = Rect::new(0, 0, 30, 8);
+        let boundary = Rect::new(0, 0, 20, 4);
         assert!(min_terminal_size(boundary));
     }
 }

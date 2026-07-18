@@ -169,7 +169,7 @@ fn args_to_method(args: &[&str]) -> Option<(&'static str, serde_json::Value)> {
         ["pane", "list"] => Some(("pane.list", json!({}))),
         ["workspace", "focus", id] => Some(("workspace.focus", json!({"workspace_id": id}))),
         ["tab", "focus", id] => Some(("tab.focus", json!({"tab_id": id}))),
-        ["pane", "zoom", id, "--off"] => Some(("pane.zoom", json!({"pane_id": id, "off": true}))),
+        ["pane", "zoom", id, "--off"] => Some(("pane.zoom", json!({"pane_id": id, "mode": "off"}))),
         ["tab", "list", "--workspace", id] => Some(("tab.list", json!({"workspace_id": id}))),
         _ => None,
     }
