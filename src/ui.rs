@@ -437,13 +437,16 @@ fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool) {
         ]
     } else {
         vec![
+            // Total width is 59 cols — must stay under the 60-col narrow cutoff.
             Span::styled("   Tab", Style::default().fg(p.accent)),
-            Span::styled(" Next Tab", Style::default().fg(p.overlay0)),
-            Span::styled("   S-Tab", Style::default().fg(p.accent)),
-            Span::styled(" Prev Tab", Style::default().fg(p.overlay0)),
-            Span::styled("   Enter", Style::default().fg(p.accent)),
+            Span::styled(" Next", Style::default().fg(p.overlay0)),
+            Span::styled("  S-Tab", Style::default().fg(p.accent)),
+            Span::styled(" Prev", Style::default().fg(p.overlay0)),
+            Span::styled("  ^p/^n", Style::default().fg(p.accent)),
+            Span::styled(" Move", Style::default().fg(p.overlay0)),
+            Span::styled("  Enter", Style::default().fg(p.accent)),
             Span::styled(" Focus", Style::default().fg(p.overlay0)),
-            Span::styled("   Esc", Style::default().fg(p.accent)),
+            Span::styled("  Esc", Style::default().fg(p.accent)),
             Span::styled(" Close", Style::default().fg(p.overlay0)),
         ]
     };
