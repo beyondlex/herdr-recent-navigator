@@ -30,4 +30,8 @@ pub struct Cli {
 pub enum Command {
     /// Record a pane.focused event to the MRU state file.
     Track,
+    /// Focus the most recent tab (previous tab) without opening the navigator UI.
+    QuickFocusPreviousTab,
+    /// Focus the most recent pane (previous pane) without opening the navigator UI.
+    QuickFocusPreviousPane,
 }

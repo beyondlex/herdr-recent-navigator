@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -106,13 +107,13 @@ fn merge_tab_ts(
 ) -> HashMap<String, u64> {
     let mut merged = tab_ts.clone();
     for n in nodes {
-        if let Some(pane_ts) = pane_ts.get(&n.pane_id).copied() {
-            if pane_ts > 0 {
-                merged
-                    .entry(n.tab_id.clone())
-                    .and_modify(|e| *e = (*e).max(pane_ts))
-                    .or_insert(pane_ts);
-            }
+        if let Some(pane_ts) = pane_ts.get(&n.pane_id).copied()
+            && pane_ts > 0
+        {
+            merged
+                .entry(n.tab_id.clone())
+                .and_modify(|e| *e = (*e).max(pane_ts))
+                .or_insert(pane_ts);
         }
     }
     merged
@@ -291,7 +292,7 @@ pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayIt
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|a| Reverse(a.1));
         scored.into_iter().map(|(i, _)| items[i].clone()).collect()
     })
 }
@@ -450,14 +451,11 @@ mod tests {
     /// Test B: Default selected index
     #[test]
     fn test_selected_index_defaults_to_zero() {
-        let nodes = sample_nodes();
-        let clamped = 0.min(nodes.len().saturating_sub(1));
+        let clamped = 0;
         assert_eq!(clamped, 0, "Default selected index should be 0");
     }
 
-    /// Test C: Active-only filter
-    #[test]
-    /// Workspace tab: groups by workspace_id
+    /// Test C: Workspace tab: groups by workspace_id
     #[test]
     fn test_build_workspace_items() {
         let nodes = sample_nodes();

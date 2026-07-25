@@ -1,6 +1,6 @@
 id = "beyondlex.herdr-recent-navigator"
 name = "Herdr Recent Navigator"
-version = "0.4.0"
+version = "0.6.0"
 description = "Recent workspaces, tabs, panes, and AI agents switcher for Herdr."
 min_herdr_version = "0.7.4"
 platforms = ["macos", "linux"]
@@ -45,6 +45,20 @@ description = "Open navigator focused on Panes tab"
 contexts = ["global", "workspace"]
 command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "panes"]
 
+[[actions]]
+id = "focus-previous-tab"
+title = "Quick Focus: Previous Tab"
+description = "Jump to the most recently focused tab without opening the navigator"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "quick-focus-previous-tab"]
+
+[[actions]]
+id = "focus-previous-pane"
+title = "Quick Focus: Previous Pane"
+description = "Jump to the most recently focused pane without opening the navigator"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "quick-focus-previous-pane"]
+
 [[events]]
 on = "workspace.focused"
 command = ["./target/release/herdr-recent-navigator", "track"]
@@ -63,3 +77,13 @@ title = "Recent Navigator"
 placement = "popup"
 width = "60%"
 command = ["./target/release/herdr-recent-navigator"]
+
+[keybindings]
+next_category = ["Tab"]
+previous_category = ["S-Tab"]
+move_up = ["Up", "C-p"]
+move_down = ["Down", "C-n"]
+select = ["Enter"]
+dismiss = ["Esc"]
+force_quit = ["C-c"]
+backspace = ["Backspace"]
