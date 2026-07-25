@@ -30,10 +30,21 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use cli::{Cli, Command as CliCommand};
-use models::{AppState, CategoryTab, FocusTarget, KeyAction};
+use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings};
+
+type RunInnerResult = Result<(
+    AppState,
+    HashMap<String, u64>,
+    HashMap<String, u64>,
+    HashMap<String, u64>,
+    ActiveContext,
+    bool,
+)>;
 
 fn pane_lock_path() -> PathBuf {
-    std::env::temp_dir().join("herdr-recent-navigator").join("pane.lock")
+    std::env::temp_dir()
+        .join("herdr-recent-navigator")
+        .join("pane.lock")
 }
 
 fn main() -> Result<()> {
@@ -61,13 +72,23 @@ fn main() -> Result<()> {
         return handle_track();
     }
 
+    // ── Quick focus previous tab (no TUI) ──
+    if let Some(CliCommand::QuickFocusPreviousTab) = &cli.command {
+        return handle_quick_focus_previous_tab();
+    }
+
+    // ── Quick focus previous pane (no TUI) ──
+    if let Some(CliCommand::QuickFocusPreviousPane) = &cli.command {
+        return handle_quick_focus_previous_pane();
+    }
+
     // ── --pane-open mode — toggle the overlay pane ──
     if cli.pane_open {
         // If --view is also set, save the category so the pane starts on that tab
         if let Some(view) = &cli.view {
             // Use a dummy AppState to write the category to state.json
             if let Ok(cat) = view.parse::<CategoryTab>() {
-                let state = AppState::new(vec![]);
+                let state = AppState::new(vec![], Keybindings::default());
                 state.save_category(&cat);
             }
         }
@@ -134,14 +155,7 @@ fn main() -> Result<()> {
 /// This function is testable without a terminal — it does no I/O beyond IPC/state files.
 fn run_inner(
     cli: &Cli,
-) -> Result<(
-    AppState,
-    HashMap<String, u64>, // pane_ts
-    HashMap<String, u64>, // tab_ts
-    HashMap<String, u64>, // ws_ts
-    ActiveContext,
-    bool, // connected
-)> {
+) -> RunInnerResult {
     #[cfg(feature = "mock")]
     let (nodes, focused_pane_info, connected) = {
         if cli.mock {
@@ -224,7 +238,7 @@ fn run_inner(
         focused_pane_info.as_ref().map(|f| f.pane_id.clone()),
     );
 
-    let mut state = AppState::new(nodes);
+    let mut state = AppState::new(nodes, load_manifest_keybindings());
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback: read theme from plugin manifest when env doesn't provide it
@@ -235,10 +249,10 @@ fn run_inner(
     if let Some(last) = AppState::load_last_category() {
         state.current_category = last;
     }
-    if let Some(view) = &cli.view {
-        if let Ok(cat) = view.parse::<CategoryTab>() {
-            state.current_category = cat;
-        }
+    if let Some(view) = &cli.view
+        && let Ok(cat) = view.parse::<CategoryTab>()
+    {
+        state.current_category = cat;
     }
 
     Ok((state, pane_ts, tab_ts, ws_ts, ctx, connected))
@@ -426,6 +440,62 @@ fn handle_track() -> Result<()> {
     Ok(())
 }
 
+/// Focus the most recently focused tab (the "previous tab").
+/// Uses MRU history to find the second-most-recent tab entry (the first is
+/// the current tab). This lets users bind a shortcut to "jump to previous
+/// tab" without opening the navigator UI.
+fn handle_quick_focus_previous_tab() -> Result<()> {
+    let entries = crate::tracker::load_mru();
+    let tab_entries: Vec<_> = entries
+        .iter()
+        .filter(|e| e.kind == tracker::MruKind::Tab)
+        .collect();
+
+    // tab_entries[0] is the current tab, [1] is the previous one
+    match tab_entries.get(1) {
+        Some(prev) => {
+            log::info!("quick-focus-previous-tab: focusing tab {}", prev.id);
+            crate::ipc::focus_tab(&prev.id)
+        }
+        None => {
+            log::warn!("No previous tab found in MRU history");
+            Ok(())
+        }
+    }
+}
+
+/// Focus the most recently focused pane (the "previous pane").
+/// Uses MRU history to find the second-most-recent pane entry (the first is
+/// the current pane). This lets users bind a shortcut to "jump to previous
+/// pane" without opening the navigator UI.
+fn handle_quick_focus_previous_pane() -> Result<()> {
+    let entries = crate::tracker::load_mru();
+    log::debug!(
+        "quick-focus-previous-pane: state_dir={:?}, loaded {} MRU entries",
+        crate::tracker::state_dir_or_default(),
+        entries.len(),
+    );
+    let pane_entries: Vec<_> = entries
+        .iter()
+        .filter(|e| e.kind == tracker::MruKind::Pane)
+        .collect();
+    log::debug!("quick-focus-previous-pane: found {} pane entries", pane_entries.len());
+    for (i, e) in pane_entries.iter().enumerate() {
+        log::debug!("  pane[{}]: id={}, ws={}", i, e.id, e.workspace_id);
+    }
+
+    match pane_entries.get(1) {
+        Some(prev) => {
+            log::info!("quick-focus-previous-pane: focusing pane {}", prev.id);
+            crate::ipc::focus_pane(&prev.id)
+        }
+        None => {
+            log::warn!("No previous pane found in MRU history");
+            Ok(())
+        }
+    }
+}
+
 /// Run the TUI event loop until the user exits.
 /// Returns the entity to focus on exit, if any.
 fn run_event_loop(
@@ -515,7 +585,7 @@ fn run_event_loop(
         // ── Render ──
         state.spinner_tick = state.spinner_tick.wrapping_add(1);
         terminal.draw(|frame| {
-            ui::render(frame, state, &*displayed, total);
+            ui::render(frame, state, &displayed, total);
         })?;
 
         // ── Poll input non-blocking (50ms timeout drives spinner refresh) ──
@@ -537,7 +607,7 @@ fn run_event_loop(
                     KeyAction::ExitSelect => {
                         state.save_last_category();
                         // Use the already-built displayed list, avoid rebuilding
-                        let target = get_selected_target_from_list(state, &*displayed);
+                        let target = get_selected_target_from_list(state, &displayed);
                         return Ok(target);
                     }
                     KeyAction::ExitDismiss => {
@@ -612,7 +682,11 @@ fn handle_pane_open() -> Result<()> {
     log::info!(
         "pane-open: HERDR_PANE_COLS={:?} → {}",
         pane_cols,
-        if narrow { "90% width" } else { "manifest width (60%)" },
+        if narrow {
+            "90% width"
+        } else {
+            "manifest width (60%)"
+        },
     );
     let mut args = vec![
         "plugin",
@@ -657,6 +731,31 @@ fn read_manifest_theme() -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let value: toml::Value = content.parse().ok()?;
     value.get("theme")?.as_str().map(String::from)
+}
+
+/// Read the `[keybindings]` section from the plugin's manifest.
+/// Falls back to defaults if the section is missing or unreadable.
+fn load_manifest_keybindings() -> Keybindings {
+    let root = match std::env::var("HERDR_PLUGIN_ROOT").ok() {
+        Some(r) => r,
+        None => return Keybindings::default(),
+    };
+    let path = PathBuf::from(root).join("herdr-plugin.toml");
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Keybindings::default(),
+    };
+    let value: toml::Value = match content.parse() {
+        Ok(v) => v,
+        Err(_) => return Keybindings::default(),
+    };
+    match value.get("keybindings") {
+        Some(kb) => {
+            let s = toml::to_string(&kb).unwrap_or_default();
+            toml::from_str(&s).unwrap_or_default()
+        }
+        None => Keybindings::default(),
+    }
 }
 
 /// Extract pane_id from `herdr plugin pane open` JSON response.

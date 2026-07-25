@@ -117,6 +117,17 @@ title = "Recent Navigator"
 placement = "popup"
 width = "60%"
 command = ["herdr-recent-navigator"]
+
+# Uncomment and edit to customize internal navigation keys:
+# [keybindings]
+# next_category = ["Tab"]
+# previous_category = ["S-Tab"]
+# move_up = ["Up", "C-p"]
+# move_down = ["Down", "C-n"]
+# select = ["Enter"]
+# dismiss = ["Esc"]
+# force_quit = ["C-c"]
+# backspace = ["Backspace"]
 PLUGIN_EOF
 
 # ── Symlink into PATH ────────────────────────────────

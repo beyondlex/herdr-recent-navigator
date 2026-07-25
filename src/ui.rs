@@ -1,5 +1,5 @@
 use crate::format::*;
-use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem};
+use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -31,21 +31,21 @@ struct Palette {
 impl Palette {
     fn dark() -> Self {
         Self {
-            accent: Color::Rgb(122, 162, 247),      // #7aa2f7
-            surface0: Color::Rgb(36, 40, 59),       // #24283b
-            surface1: Color::Rgb(65, 72, 104),      // #414868
-            surface_dim: Color::Rgb(26, 27, 38),    // #1a1b26
-            overlay0: Color::Rgb(86, 95, 137),      // #565f89
-            overlay1: Color::Rgb(105, 113, 150),    // #69719e
-            text: Color::Rgb(192, 202, 245),        // #c0caf5
-            subtext0: Color::Rgb(169, 177, 214),    // #a9b1d6
-            mauve: Color::Rgb(187, 154, 247),       // #bb9af7
-            green: Color::Rgb(158, 206, 106),       // #9ece6a
-            yellow: Color::Rgb(224, 175, 104),      // #e0af68
-            red: Color::Rgb(247, 118, 142),         // #f7768e
-            blue: Color::Rgb(122, 162, 247),        // #7aa2f7
-            teal: Color::Rgb(125, 207, 255),        // #7dcfff
-            peach: Color::Rgb(255, 158, 100),       // #ff9e64
+            accent: Color::Rgb(122, 162, 247),   // #7aa2f7
+            surface0: Color::Rgb(36, 40, 59),    // #24283b
+            surface1: Color::Rgb(65, 72, 104),   // #414868
+            surface_dim: Color::Rgb(26, 27, 38), // #1a1b26
+            overlay0: Color::Rgb(86, 95, 137),   // #565f89
+            overlay1: Color::Rgb(105, 113, 150), // #69719e
+            text: Color::Rgb(192, 202, 245),     // #c0caf5
+            subtext0: Color::Rgb(169, 177, 214), // #a9b1d6
+            mauve: Color::Rgb(187, 154, 247),    // #bb9af7
+            green: Color::Rgb(158, 206, 106),    // #9ece6a
+            yellow: Color::Rgb(224, 175, 104),   // #e0af68
+            red: Color::Rgb(247, 118, 142),      // #f7768e
+            blue: Color::Rgb(122, 162, 247),     // #7aa2f7
+            teal: Color::Rgb(125, 207, 255),     // #7dcfff
+            peach: Color::Rgb(255, 158, 100),    // #ff9e64
         }
     }
 
@@ -203,7 +203,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         list_chunks[1],
         &p,
     );
-    render_status_bar(frame, chunks[3], &p, narrow);
+    render_status_bar(frame, chunks[3], &p, narrow, &state.keybindings);
 }
 
 // ── Sub-renderers ───────────────────────────────────────────────────────────
@@ -218,7 +218,7 @@ fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, nar
         .iter()
         .map(|tab| {
             let label = if narrow {
-                format!("{}", tab_label(tab, narrow))
+                tab_label(tab, narrow).to_string()
             } else {
                 format!(" {} ", tab_label(tab, narrow))
             };
@@ -318,7 +318,14 @@ fn render_column_header(
     let cols = Layout::horizontal(constraints)
         .flex(Flex::Start)
         .split(Rect::new(0, 0, area.width, 1));
-    let mut spans: Vec<Span> = vec![Span::raw(" ".repeat(cols[..col_start].iter().map(|c| c.width as usize).sum::<usize>()))];
+    let mut spans: Vec<Span> = vec![Span::raw(
+        " ".repeat(
+            cols[..col_start]
+                .iter()
+                .map(|c| c.width as usize)
+                .sum::<usize>(),
+        ),
+    )];
     let label_count = labels.len();
     for (i, &label) in labels.iter().enumerate() {
         let cw = cols[col_start + i].width as usize;
@@ -423,30 +430,59 @@ fn render_list(
     );
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool) {
+fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool, kb: &Keybindings) {
+    fn first(v: &[String]) -> &str {
+        v.first().map(|s| s.as_str()).unwrap_or("?")
+    }
     let hints: Vec<Span> = if narrow {
         vec![
-            Span::styled(" Tab", Style::default().fg(p.accent)),
+            Span::styled(
+                format!(" {}", first(&kb.next_category)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(" S-Tab", Style::default().fg(p.accent)),
+            Span::styled(
+                format!(" {}", first(&kb.previous_category)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(" ↵", Style::default().fg(p.accent)),
+            Span::styled(
+                format!(" {}", first(&kb.select)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled("Go", Style::default().fg(p.overlay0)),
-            Span::styled(" Esc", Style::default().fg(p.accent)),
+            Span::styled(
+                format!(" {}", first(&kb.dismiss)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled("✕", Style::default().fg(p.overlay0)),
         ]
     } else {
         vec![
-            // Total width is 59 cols — must stay under the 60-col narrow cutoff.
-            Span::styled("   Tab", Style::default().fg(p.accent)),
+            Span::styled(
+                format!("   {}", first(&kb.next_category)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled(" Next", Style::default().fg(p.overlay0)),
-            Span::styled("  S-Tab", Style::default().fg(p.accent)),
+            Span::styled(
+                format!("  {}", first(&kb.previous_category)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled(" Prev", Style::default().fg(p.overlay0)),
-            Span::styled("  ^p/^n", Style::default().fg(p.accent)),
+            Span::styled(
+                format!("  {}", first(&kb.move_up)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled(" Move", Style::default().fg(p.overlay0)),
-            Span::styled("  Enter", Style::default().fg(p.accent)),
+            Span::styled(
+                format!("  {}", first(&kb.select)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled(" Focus", Style::default().fg(p.overlay0)),
-            Span::styled("  Esc", Style::default().fg(p.accent)),
+            Span::styled(
+                format!("  {}", first(&kb.dismiss)),
+                Style::default().fg(p.accent),
+            ),
             Span::styled(" Close", Style::default().fg(p.overlay0)),
         ]
     };
@@ -507,7 +543,12 @@ mod col_layout {
         Constraint::Percentage(22),
     ];
     pub const DOTS: Constraint = Constraint::Length(8);
-    pub const TAB: [Constraint; 4] = [IDX, Constraint::Percentage(45), Constraint::Percentage(45), DOTS];
+    pub const TAB: [Constraint; 4] = [
+        IDX,
+        Constraint::Percentage(45),
+        Constraint::Percentage(45),
+        DOTS,
+    ];
     pub const AGENT: [Constraint; 5] = [
         IDX,
         ICON,

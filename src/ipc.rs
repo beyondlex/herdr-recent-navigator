@@ -237,12 +237,11 @@ fn herdr_cli<R: DeserializeOwned>(args: &[&str]) -> Result<R> {
     }
 
     // Try UDS JSON-RPC first (faster: no process spawn)
-    if let Some((method, params)) = args_to_method(args) {
-        if let Ok(val) = uds_request(method, params) {
-            if let Ok(result) = serde_json::from_value(val) {
-                return Ok(result);
-            }
-        }
+    if let Some((method, params)) = args_to_method(args)
+        && let Ok(val) = uds_request(method, params)
+        && let Ok(result) = serde_json::from_value(val)
+    {
+        return Ok(result);
     }
 
     let bin = herdr_bin();
@@ -354,12 +353,12 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
 
     let tab_names: HashMap<(String, String), String> = all_tabs
         .into_iter()
-        .filter_map(|t| {
+        .map(|t| {
             let label = t.label.unwrap_or_else(|| {
                 let short = t.tab_id.rsplit(':').next().unwrap_or(&t.tab_id);
                 format!("tab-{}", short)
             });
-            Some(((t.workspace_id, t.tab_id), label))
+            ((t.workspace_id, t.tab_id), label)
         })
         .collect();
 

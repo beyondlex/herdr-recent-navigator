@@ -42,28 +42,28 @@ navigable by keyboard.
 > **Warning:** Requires Herdr **≥ 0.7.4**. Check with `herdr -V`.  
 > To upgrade Herdr, see [herdr.dev/docs/install/#update](https://herdr.dev/docs/install/#update).
 
-> **Recommendation:** Use the curl method — no Rust toolchain required.
+Choose one of the following:
 
-### Quick install (curl | bash)
+### A. Quick install (curl | bash)
+
+Downloads a prebuilt binary to `~/.local/bin/` and links it into Herdr:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/beyondlex/herdr-recent-navigator/main/install.sh | bash
 ```
 
-Downloads a prebuilt binary for your platform to `~/.local/bin/` and links it
-into Herdr.
+> **Recommendation:** Use this method — no Rust toolchain required.
 
-### Install via Herdr plugin manager
+### B. Install via Herdr plugin manager
 
 ```bash
 herdr plugin install beyondlex/herdr-recent-navigator
 ```
 
 Herdr clones the repo, builds from source, and registers the plugin
-automatically. Equivalent to the build-from-source steps below, but
-orchestrated by Herdr to a preset location.
+automatically.
 
-### Build from source (manual)
+### C. Build from source (manual)
 
 ```bash
 git clone https://github.com/beyondlex/herdr-recent-navigator
@@ -122,6 +122,8 @@ Press the shortcut to open the navigator popup.
 
 ## Configuration
 
+### Theme
+
 The plugin reads its theme from the `theme` field in `herdr-plugin.toml`.
 Where to find that file depends on how you installed:
 
@@ -141,9 +143,57 @@ The navigator uses a dark TokyoNight palette by default. Set `theme = "light"`
 for a light palette. Full per-theme auto-detection will be added once Herdr
 sends the theme name via `HERDR_PLUGIN_CONTEXT_JSON`.
 
+### Keybindings
+
+All internal navigation keys are configurable via the `[keybindings]` section in
+`herdr-plugin.toml`. Each action accepts a list of key strings (multiple
+bindings per action).
+
+```toml
+[keybindings]
+next_category = ["Tab"]
+previous_category = ["S-Tab"]
+move_up = ["Up", "C-p"]
+move_down = ["Down", "C-n"]
+select = ["Enter"]
+dismiss = ["Esc"]
+force_quit = ["C-c"]
+backspace = ["Backspace"]
+```
+
+#### Key syntax
+
+| Format | Meaning |
+|---|---|
+| `Tab`, `Up`, `Down`, `Enter`, `Esc`, `Backspace`, `Space` | Special keys |
+| `S-Tab` | Shift+Tab (same as `BackTab`) |
+| `a`...`z`, `0`...`9` | Literal character |
+| `C-a`...`C-z` | Ctrl + character |
+| `S-a`...`S-z` | Shift + character |
+| `M-a`...`M-z` or `A-a`...`A-z` | Alt + character |
+| `C-S-a` | Ctrl + Shift + a |
+| `C-M-a` | Ctrl + Alt + a |
+
+**Note:** Terminal support for Alt+key combinations is limited. Some
+terminals send `Esc` + `key` instead of a distinct Alt+key event. Prefer
+Ctrl-based combinations when possible.
+
+#### Default bindings
+
+| Action | Default keys | Description |
+|---|---|---|
+| `next_category` | `Tab` | Next category tab |
+| `previous_category` | `S-Tab` | Previous category tab |
+| `move_up` | `Up`, `C-p` | Move selection up |
+| `move_down` | `Down`, `C-n` | Move selection down |
+| `select` | `Enter` | Focus selected item |
+| `dismiss` | `Esc` | Clear search / close |
+| `force_quit` | `C-c` | Close without focusing |
+| `backspace` | `Backspace` | Delete last search character |
+
 ## Usage
 
-| Key | Action |
+| Key (default) | Action |
 |---|---|
 | `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate list |
 | `Tab` / `Shift+Tab` | Cycle category tabs |
@@ -151,6 +201,9 @@ sends the theme name via `HERDR_PLUGIN_CONTEXT_JSON`.
 | `Esc` | Clear search / close |
 | `Ctrl+C` | Close without focusing |
 | Type any text | Fuzzy-search the list |
+
+All keys in the table above are configurable — see [Keybindings](#keybindings)
+to customize.
 
 ### Category tabs
 
