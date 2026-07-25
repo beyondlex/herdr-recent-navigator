@@ -145,7 +145,7 @@ sends the theme name via `HERDR_PLUGIN_CONTEXT_JSON`.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Navigate list |
+| `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate list |
 | `Tab` / `Shift+Tab` | Cycle category tabs |
 | `Enter` | Focus selected item |
 | `Esc` | Clear search / close |

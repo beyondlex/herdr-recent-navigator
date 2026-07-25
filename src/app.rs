@@ -66,33 +66,45 @@ impl AppState {
                 KeyAction::Continue
             }
 
-            // Up/Down arrows: navigate list (wrap around)
-            (KeyCode::Up, _) => {
-                if list_len == 0 {
-                    self.selected_index = 0;
-                } else {
-                    self.selected_index = if self.selected_index == 0 {
-                        list_len - 1
-                    } else {
-                        self.selected_index - 1
-                    };
-                }
+            // Up / Ctrl+P: previous item (wrap around)
+            (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                self.select_prev(list_len);
                 KeyAction::Continue
             }
-            (KeyCode::Down, _) => {
-                if list_len == 0 {
-                    self.selected_index = 0;
-                } else {
-                    self.selected_index = if self.selected_index >= list_len - 1 {
-                        0
-                    } else {
-                        self.selected_index + 1
-                    };
-                }
+
+            // Down / Ctrl+N: next item (wrap around)
+            (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                self.select_next(list_len);
                 KeyAction::Continue
             }
 
             _ => KeyAction::Continue,
+        }
+    }
+
+    /// Move selection to the previous item, wrapping to the end.
+    fn select_prev(&mut self, list_len: usize) {
+        if list_len == 0 {
+            self.selected_index = 0;
+        } else {
+            self.selected_index = if self.selected_index == 0 {
+                list_len - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    /// Move selection to the next item, wrapping to the start.
+    fn select_next(&mut self, list_len: usize) {
+        if list_len == 0 {
+            self.selected_index = 0;
+        } else {
+            self.selected_index = if self.selected_index >= list_len - 1 {
+                0
+            } else {
+                self.selected_index + 1
+            };
         }
     }
 }
@@ -227,6 +239,55 @@ mod tests {
         assert_eq!(state.search_query, "x");
         let action = state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 10);
         assert_eq!(action, KeyAction::Continue);
+        assert!(state.search_query.is_empty());
+    }
+
+    /// Ctrl+N walks down the list and wraps to the top
+    #[test]
+    fn test_ctrl_n_moves_down_and_wraps() {
+        let nodes = mock_nodes();
+        let mut state = AppState::new(nodes);
+
+        let ctrl_n = make_key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+        for expected in [1, 2, 0] {
+            state.handle_key(ctrl_n, 3);
+            assert_eq!(state.selected_index, expected);
+        }
+    }
+
+    /// Ctrl+P walks up the list, wrapping to the bottom from the top
+    #[test]
+    fn test_ctrl_p_moves_up_and_wraps() {
+        let nodes = mock_nodes();
+        let mut state = AppState::new(nodes);
+
+        let ctrl_p = make_key(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        for expected in [2, 1, 0] {
+            state.handle_key(ctrl_p, 3);
+            assert_eq!(state.selected_index, expected);
+        }
+    }
+
+    /// Ctrl+N / Ctrl+P on an empty list stay at 0 (no underflow panic)
+    #[test]
+    fn test_ctrl_n_p_empty_list() {
+        let nodes = mock_nodes();
+        let mut state = AppState::new(nodes);
+
+        state.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL), 0);
+        assert_eq!(state.selected_index, 0);
+        state.handle_key(make_key(KeyCode::Char('p'), KeyModifiers::CONTROL), 0);
+        assert_eq!(state.selected_index, 0);
+    }
+
+    /// Ctrl+N / Ctrl+P must not fall through to search input
+    #[test]
+    fn test_ctrl_n_does_not_type_into_search() {
+        let nodes = mock_nodes();
+        let mut state = AppState::new(nodes);
+
+        state.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL), 3);
+        state.handle_key(make_key(KeyCode::Char('p'), KeyModifiers::CONTROL), 3);
         assert!(state.search_query.is_empty());
     }
 }
