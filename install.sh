@@ -99,6 +99,20 @@ description = "Open navigator focused on Panes tab"
 contexts = ["global", "workspace"]
 command = ["herdr-recent-navigator", "--pane-open", "--view", "panes"]
 
+[[actions]]
+id = "focus-previous-tab"
+title = "Quick Focus: Previous Tab"
+description = "Jump to the most recently focused tab without opening the navigator"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "quick-focus-previous-tab"]
+
+[[actions]]
+id = "focus-previous-pane"
+title = "Quick Focus: Previous Pane"
+description = "Jump to the most recently focused pane without opening the navigator"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "quick-focus-previous-pane"]
+
 [[events]]
 on = "workspace.focused"
 command = ["herdr-recent-navigator", "track"]
