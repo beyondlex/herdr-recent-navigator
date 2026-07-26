@@ -161,5 +161,5 @@ if command -v herdr &>/dev/null; then
 else
   warn "Herdr not found. Install Herdr first, then run:"
   printf "  ${CYAN}herdr plugin link${NC} ${DIM}%s${NC}\n" "$INSTALL_DIR"
-  printf "  ${DIM}Configure theme at${NC} ${BOLD}%s/herdr-plugin.toml${NC}${DIM}.${NC}\n\n" "$INSTALL_DIR"
+  printf "  ${DIM}Configure keybindings at${NC} ${BOLD}%s/herdr-plugin.toml${NC}${DIM}.${NC}\n\n" "$INSTALL_DIR"
 fi
