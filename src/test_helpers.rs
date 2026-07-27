@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
 static STATE_DIR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static CONFIG_PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Create a temporary directory, set HERDR_PLUGIN_STATE_DIR to it,
 /// call the closure, then clean up.
@@ -31,6 +32,35 @@ pub fn with_temp_dir(f: impl FnOnce(&Path)) {
     }));
     unsafe {
         std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+    }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Write `contents` to a temporary Herdr config file, point
+/// `HERDR_CONFIG_PATH` at it, call the closure, then clean up.
+/// Pass `None` to leave the file absent while still overriding the env var.
+/// Uses a global lock to prevent concurrent env var conflicts in parallel tests.
+pub fn with_herdr_config(contents: Option<&str>, f: impl FnOnce()) {
+    let lock = CONFIG_PATH_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = match lock.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let dir = TempDir::new().expect("Failed to create temp dir");
+    let path = dir.path().join("config.toml");
+    if let Some(c) = contents {
+        std::fs::write(&path, c).expect("Failed to write temp config");
+    }
+    // SAFETY: We hold CONFIG_PATH_LOCK to prevent concurrent env var access,
+    // which is the primary source of UB per Rust docs.
+    unsafe {
+        std::env::set_var("HERDR_CONFIG_PATH", &path);
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    unsafe {
+        std::env::remove_var("HERDR_CONFIG_PATH");
     }
     if let Err(e) = result {
         std::panic::resume_unwind(e);

@@ -239,7 +239,13 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
     let mut state = AppState::new(nodes, load_manifest_keybindings());
     state.theme_name = ctx.theme_name.clone();
 
-    // Fallback: read theme from plugin manifest when env doesn't provide it
+    // Fallback 1: read the active theme from Herdr's own config, which is where
+    // it actually lives. Herdr does not currently expose it in the plugin context.
+    if state.theme_name.is_none() {
+        state.theme_name = read_herdr_config_theme();
+    }
+
+    // Fallback 2: read theme from plugin manifest when nothing else provides it
     if state.theme_name.is_none() {
         state.theme_name = read_manifest_theme();
     }
@@ -723,8 +729,49 @@ fn handle_pane_open() -> Result<()> {
     std::process::exit(output.status.code().unwrap_or(1));
 }
 
+/// Resolve the path to Herdr's own config file.
+///
+/// Honors `HERDR_CONFIG_PATH` first, then `XDG_CONFIG_HOME`, then
+/// `$HOME/.config/herdr/config.toml`.
+fn herdr_config_path() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("HERDR_CONFIG_PATH")
+        && !explicit.is_empty()
+    {
+        return Some(PathBuf::from(explicit));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(PathBuf::from(xdg).join("herdr").join("config.toml"));
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("herdr")
+            .join("config.toml"),
+    )
+}
+
+/// Read `[theme] name` from Herdr's own config file.
+///
+/// This is the authoritative source for the user's active theme. Herdr does not
+/// currently surface it in the plugin context, so without this the light palette
+/// is unreachable for anyone who hasn't hand-edited the plugin manifest.
+/// Returns `None` if the config is missing, unreadable, or has no `[theme] name`.
+fn read_herdr_config_theme() -> Option<String> {
+    let path = herdr_config_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = content.parse().ok()?;
+    let name = value.get("theme")?.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// Read the `theme` field from the plugin's own manifest (`herdr-plugin.toml`).
-/// Used as fallback when Herdr doesn't provide `theme_name` in the context.
+/// Used as a last resort when neither the context nor Herdr's config provides one.
 /// Returns `None` if the manifest is missing, unreadable, or has no theme field.
 fn read_manifest_theme() -> Option<String> {
     let root = std::env::var("HERDR_PLUGIN_ROOT").ok()?;
@@ -771,6 +818,73 @@ fn extract_pane_id(response: &str) -> Option<String> {
         .get("pane_id")?
         .as_str()
         .map(String::from)
+}
+
+#[cfg(test)]
+mod theme_resolution_tests {
+    use super::*;
+    use crate::test_helpers::with_herdr_config;
+
+    #[test]
+    fn reads_theme_name_from_herdr_config() {
+        with_herdr_config(Some("[theme]\nname = \"one-light\"\n"), || {
+            assert_eq!(read_herdr_config_theme(), Some("one-light".to_string()));
+        });
+    }
+
+    #[test]
+    fn reads_theme_name_alongside_other_sections() {
+        let cfg = "[keys]\nprefix = \"ctrl+a\"\n\n[theme]\nname = \"catppuccin-latte\"\nauto_switch = false\n";
+        with_herdr_config(Some(cfg), || {
+            assert_eq!(
+                read_herdr_config_theme(),
+                Some("catppuccin-latte".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn returns_none_when_config_missing() {
+        with_herdr_config(None, || {
+            assert_eq!(read_herdr_config_theme(), None);
+        });
+    }
+
+    #[test]
+    fn returns_none_when_theme_section_absent() {
+        with_herdr_config(Some("[keys]\nprefix = \"ctrl+a\"\n"), || {
+            assert_eq!(read_herdr_config_theme(), None);
+        });
+    }
+
+    #[test]
+    fn returns_none_when_theme_name_absent() {
+        with_herdr_config(Some("[theme]\nauto_switch = false\n"), || {
+            assert_eq!(read_herdr_config_theme(), None);
+        });
+    }
+
+    #[test]
+    fn returns_none_on_malformed_toml() {
+        with_herdr_config(Some("[theme\nname = broken"), || {
+            assert_eq!(read_herdr_config_theme(), None);
+        });
+    }
+
+    #[test]
+    fn returns_none_on_blank_theme_name() {
+        with_herdr_config(Some("[theme]\nname = \"   \"\n"), || {
+            assert_eq!(read_herdr_config_theme(), None);
+        });
+    }
+
+    #[test]
+    fn herdr_config_path_prefers_explicit_env() {
+        with_herdr_config(Some("[theme]\nname = \"x-day\"\n"), || {
+            let expected = std::env::var("HERDR_CONFIG_PATH").unwrap();
+            assert_eq!(herdr_config_path(), Some(PathBuf::from(expected)));
+        });
+    }
 }
 
 #[cfg(test)]
