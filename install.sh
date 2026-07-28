@@ -69,68 +69,68 @@ id = "open"
 title = "Open Navigator"
 description = "Open the recent items navigator"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "--pane-open"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "--pane-open"]
 
 [[actions]]
 id = "focus-workspaces"
 title = "Quick Focus: Workspaces"
 description = "Open navigator focused on Workspaces tab"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "--pane-open", "--view", "workspaces"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "--pane-open", "--view", "workspaces"]
 
 [[actions]]
 id = "focus-tabs"
 title = "Quick Focus: Tabs"
 description = "Open navigator focused on Tabs tab"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "--pane-open", "--view", "tabs"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "--pane-open", "--view", "tabs"]
 
 [[actions]]
 id = "focus-agents"
 title = "Quick Focus: Agents"
 description = "Open navigator focused on Agents tab"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "--pane-open", "--view", "agents"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "--pane-open", "--view", "agents"]
 
 [[actions]]
 id = "focus-panes"
 title = "Quick Focus: Panes"
 description = "Open navigator focused on Panes tab"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "--pane-open", "--view", "panes"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "--pane-open", "--view", "panes"]
 
 [[actions]]
 id = "focus-previous-tab"
 title = "Quick Focus: Previous Tab"
 description = "Jump to the most recently focused tab without opening the navigator"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "quick-focus-previous-tab"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "quick-focus-previous-tab"]
 
 [[actions]]
 id = "focus-previous-pane"
 title = "Quick Focus: Previous Pane"
 description = "Jump to the most recently focused pane without opening the navigator"
 contexts = ["global", "workspace"]
-command = ["herdr-recent-navigator", "quick-focus-previous-pane"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "quick-focus-previous-pane"]
 
 [[events]]
 on = "workspace.focused"
-command = ["herdr-recent-navigator", "track"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "track"]
 
 [[events]]
 on = "pane.focused"
-command = ["herdr-recent-navigator", "track"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "track"]
 
 [[events]]
 on = "tab.focused"
-command = ["herdr-recent-navigator", "track"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "track"]
 
 [[panes]]
 id = "navigator"
 title = "Recent Navigator"
 placement = "popup"
 width = "60%"
-command = ["herdr-recent-navigator"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator"]
 
 # Uncomment and edit to customize internal navigation keys:
 # [keybindings]
