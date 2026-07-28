@@ -78,7 +78,10 @@ impl Palette {
 }
 
 fn is_light_theme(name: &str) -> bool {
-    name.ends_with("-latte")
+    let name = name.trim().to_ascii_lowercase();
+    // Accept a bare "light" so an explicit manifest value works as written.
+    name == "light"
+        || name.ends_with("-latte")
         || name.ends_with("-light")
         || name.ends_with("-day")
         || name.ends_with("-dawn")
@@ -705,3 +708,64 @@ fn row_pane(
 // ── Mobile / responsive helpers & layout — now in crate::format ──
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
 // are imported via `use crate::format::*;` at the top of this file.
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    #[test]
+    fn detects_light_theme_suffixes() {
+        for name in [
+            "one-light",
+            "catppuccin-latte",
+            "tokyonight-day",
+            "rose-pine-dawn",
+            "kanagawa-lotus",
+        ] {
+            assert!(is_light_theme(name), "{name} should be detected as light");
+        }
+    }
+
+    #[test]
+    fn detects_bare_light_value() {
+        assert!(is_light_theme("light"));
+        assert!(is_light_theme("  Light  "));
+    }
+
+    #[test]
+    fn detects_light_case_insensitively() {
+        assert!(is_light_theme("One-Light"));
+        assert!(is_light_theme("Catppuccin-Latte"));
+    }
+
+    #[test]
+    fn rejects_dark_themes() {
+        for name in [
+            "dark",
+            "tokyonight",
+            "tokyonight-storm",
+            "catppuccin-mocha",
+            "one-dark",
+            "gruvbox",
+            "lightning",
+            "daylight-saving",
+        ] {
+            assert!(!is_light_theme(name), "{name} should not be light");
+        }
+    }
+
+    #[test]
+    fn for_theme_picks_light_palette_for_light_names() {
+        let light = Palette::light();
+        let picked = Palette::for_theme(Some("one-light"));
+        assert_eq!(picked.text, light.text);
+        assert_eq!(picked.surface_dim, light.surface_dim);
+    }
+
+    #[test]
+    fn for_theme_defaults_to_dark_when_unknown_or_absent() {
+        let dark = Palette::dark();
+        assert_eq!(Palette::for_theme(None).text, dark.text);
+        assert_eq!(Palette::for_theme(Some("tokyonight")).text, dark.text);
+    }
+}
