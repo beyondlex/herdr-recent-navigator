@@ -120,10 +120,10 @@ herdr server reload-config
 
 Press the shortcut to open the navigator popup.
 
-### Quick-focus: jump to previous tab/pane without opening the UI
+### Quick-focus: jump to previous tab/pane/agent without opening the UI
 
-Two plugin actions focus the most recently focused tab or pane directly via MRU
-history, no dialog needed:
+Three plugin actions focus the most recently focused tab, pane, or agent directly
+via MRU history, no dialog needed:
 
 ```toml
 [[keys.command]]
@@ -137,10 +137,17 @@ key = "cmd+y"
 type = "plugin_action"
 command = "beyondlex.herdr-recent-navigator.focus-previous-pane"
 description = "Jump to previous pane"
+
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "beyondlex.herdr-recent-navigator.focus-previous-agent"
+description = "Jump to previous agent"
 ```
 
-The list is MRU-sorted, so the first entry is the current tab/pane and the
-second is the previous one — mirroring GNU screen's alt-tab workflow.
+The tab and pane actions use the second MRU entry, mirroring GNU screen's
+alt-tab workflow. The agent action skips the currently focused agent; from a
+non-agent pane it jumps to the most recently focused agent.
 
 ## Configuration
 
