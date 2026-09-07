@@ -113,6 +113,13 @@ description = "Jump to the most recently focused pane without opening the naviga
 contexts = ["global", "workspace"]
 command = ["${INSTALL_DIR}/herdr-recent-navigator", "quick-focus-previous-pane"]
 
+[[actions]]
+id = "focus-previous-agent"
+title = "Quick Focus: Previous Agent"
+description = "Jump to the most recently used agent without opening the navigator"
+contexts = ["global", "workspace"]
+command = ["${INSTALL_DIR}/herdr-recent-navigator", "quick-focus-previous-agent"]
+
 [[events]]
 on = "workspace.focused"
 command = ["${INSTALL_DIR}/herdr-recent-navigator", "track"]

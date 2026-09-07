@@ -82,6 +82,11 @@ fn main() -> Result<()> {
         return handle_quick_focus_previous_pane();
     }
 
+    // ── Quick focus previous agent (no TUI) ──
+    if let Some(CliCommand::QuickFocusPreviousAgent) = &cli.command {
+        return handle_quick_focus_previous_agent();
+    }
+
     // ── --pane-open mode — toggle the overlay pane ──
     if cli.pane_open {
         // If --view is also set, save the category so the pane starts on that tab
@@ -498,6 +503,55 @@ fn handle_quick_focus_previous_pane() -> Result<()> {
         }
         None => {
             log::warn!("No previous pane found in MRU history");
+            Ok(())
+        }
+    }
+}
+
+fn previous_agent_pane_id(
+    entries: &[tracker::MruEntry],
+    nodes: &[models::NavigationNode],
+    current_pane_id: Option<&str>,
+) -> Option<String> {
+    let agent_panes = nodes
+        .iter()
+        .filter(|node| node.agent_id.is_some())
+        .map(|node| node.pane_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == tracker::MruKind::Pane
+                && agent_panes.contains(entry.id.as_str())
+                && current_pane_id != Some(entry.id.as_str())
+        })
+        .map(|entry| entry.id.clone())
+        .next()
+}
+
+/// Focus the most recently used agent pane without opening the navigator.
+/// When an agent is already focused, skips it so repeated invocations toggle
+/// between the two most recently focused agents.
+fn handle_quick_focus_previous_agent() -> Result<()> {
+    let entries = crate::tracker::load_mru();
+    let (nodes, focused_pane) = crate::ipc::fetch_all_nodes()?;
+    let context = derive_active_context(
+        &nodes,
+        focused_pane.as_ref().map(|pane| pane.pane_id.clone()),
+    );
+    let current_pane_id = context
+        .pane_id
+        .as_deref()
+        .or_else(|| focused_pane.as_ref().map(|pane| pane.pane_id.as_str()));
+
+    match previous_agent_pane_id(&entries, &nodes, current_pane_id) {
+        Some(pane_id) => {
+            log::info!("quick-focus-previous-agent: focusing pane {pane_id}");
+            crate::ipc::focus_pane(&pane_id)
+        }
+        None => {
+            log::warn!("No previous agent found in MRU history");
             Ok(())
         }
     }
@@ -949,5 +1003,59 @@ mod integration_tests {
     #[test]
     fn test_extract_pane_id_invalid_json() {
         assert_eq!(extract_pane_id("not json"), None);
+    }
+
+    fn mru_pane(id: &str, focused_at: u64) -> tracker::MruEntry {
+        tracker::MruEntry {
+            kind: tracker::MruKind::Pane,
+            id: id.to_string(),
+            workspace_id: "ws-1".to_string(),
+            focused_at,
+            name: None,
+            workspace_name: None,
+        }
+    }
+
+    fn node(pane_id: &str, agent_id: Option<&str>) -> models::NavigationNode {
+        models::NavigationNode {
+            workspace_id: "ws-1".to_string(),
+            workspace_name: "workspace".to_string(),
+            tab_id: "tab-1".to_string(),
+            tab_name: "tab".to_string(),
+            pane_id: pane_id.to_string(),
+            pane_name: None,
+            agent_id: agent_id.map(str::to_string),
+            agent_status: models::AgentStatus::Idle,
+            last_accessed_at: 0,
+        }
+    }
+
+    #[test]
+    fn previous_agent_skips_the_current_agent() {
+        let entries = vec![mru_pane("agent-a", 2), mru_pane("agent-b", 1)];
+        let nodes = vec![
+            node("agent-a", Some("claude")),
+            node("agent-b", Some("codex")),
+        ];
+
+        assert_eq!(
+            previous_agent_pane_id(&entries, &nodes, Some("agent-a")),
+            Some("agent-b".to_string())
+        );
+    }
+
+    #[test]
+    fn previous_agent_uses_the_most_recent_agent_from_a_shell() {
+        let entries = vec![
+            mru_pane("shell", 3),
+            mru_pane("agent-a", 2),
+            mru_pane("stale-agent", 1),
+        ];
+        let nodes = vec![node("shell", None), node("agent-a", Some("claude"))];
+
+        assert_eq!(
+            previous_agent_pane_id(&entries, &nodes, Some("shell")),
+            Some("agent-a".to_string())
+        );
     }
 }

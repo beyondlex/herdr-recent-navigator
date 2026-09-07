@@ -34,4 +34,6 @@ pub enum Command {
     QuickFocusPreviousTab,
     /// Focus the most recent pane (previous pane) without opening the navigator UI.
     QuickFocusPreviousPane,
+    /// Focus the most recently used agent without opening the navigator UI.
+    QuickFocusPreviousAgent,
 }
