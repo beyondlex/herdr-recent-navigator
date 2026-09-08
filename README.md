@@ -258,8 +258,10 @@ to customize.
 - **Panes**: Individual terminal panes
 - **Others**: find panes by runtime state — ssh target, foreground command,
   cwd — and by buffer content: any query also substring-matches pane
-  scrollback and shows a one-line excerpt around each hit. Prefix the query
-  with `.` to search buffer content only.
+  scrollback and shows a one-line excerpt around each hit. A filter prefix
+  narrows the search to one source and shows as a badge next to the input:
+  type `cmd `, `ssh `, `cwd `, `file `, or `term ` (label + space), or `.`
+  for buffer content only (`.` shorthand: `.file` = file buffers only).
 
 
 ## License

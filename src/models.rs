@@ -60,6 +60,15 @@ pub enum OtherSource {
 }
 
 impl OtherSource {
+    /// All variants, in display-priority order.
+    pub const ALL: [OtherSource; 5] = [
+        OtherSource::Ssh,
+        OtherSource::Cmd,
+        OtherSource::Terminal,
+        OtherSource::File,
+        OtherSource::Cwd,
+    ];
+
     /// Short label shown in the Type column / searchable text.
     pub fn label(&self) -> &'static str {
         match self {
@@ -80,6 +89,37 @@ impl OtherSource {
             OtherSource::File => 3,
             OtherSource::Cwd => 4,
         }
+    }
+}
+
+/// A narrowed-search filter for the Others tab, parsed off the query prefix
+/// and shown as a badge next to the input (`cmd `, `.`, …).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OthersFilter {
+    /// Leading `.` — buffer content rows only (file + term).
+    Content,
+    /// `<label> ` prefix — rows of that source only.
+    Source(OtherSource),
+}
+
+impl OthersFilter {
+    /// Split a leading filter off `query`, returning it with the remaining
+    /// text. A source filter activates only when its exact label is followed
+    /// by a space (`cmd `, `ssh `, `cwd `, `file `, `term `) — a bare label
+    /// stays ordinary search text.
+    pub fn parse(query: &str) -> (Option<Self>, &str) {
+        let (base, rest) = match query.strip_prefix('.') {
+            Some(r) => (Some(OthersFilter::Content), r),
+            None => (None, query),
+        };
+        for src in OtherSource::ALL {
+            if let Some(tail) = rest.strip_prefix(src.label())
+                && let Some(needle) = tail.strip_prefix(' ')
+            {
+                return (Some(OthersFilter::Source(src)), needle);
+            }
+        }
+        (base, rest)
     }
 }
 
@@ -613,6 +653,47 @@ mod category_tab_tests {
         // Nothing configured to show: the navigator must keep one tab.
         assert_eq!(parse_tabs(&[]), vec![CategoryTab::Others]);
         assert_eq!(parse_tabs(&["nope".to_string()]), vec![CategoryTab::Others]);
+    }
+
+    // ── OthersFilter::parse ──
+
+    #[test]
+    fn test_others_filter_label_plus_space_activates() {
+        assert_eq!(
+            OthersFilter::parse("cmd deploy"),
+            (Some(OthersFilter::Source(OtherSource::Cmd)), "deploy")
+        );
+        assert_eq!(
+            OthersFilter::parse("ssh "),
+            (Some(OthersFilter::Source(OtherSource::Ssh)), "")
+        );
+        assert_eq!(
+            OthersFilter::parse("cwd /var/log"),
+            (Some(OthersFilter::Source(OtherSource::Cwd)), "/var/log")
+        );
+    }
+
+    #[test]
+    fn test_others_filter_bare_label_stays_search_text() {
+        // No trailing space: the label is ordinary fuzzy text.
+        assert_eq!(OthersFilter::parse("cmd"), (None, "cmd"));
+        // A label-shaped prefix that is not exactly the label is plain text.
+        assert_eq!(OthersFilter::parse("cmdx rest"), (None, "cmdx rest"));
+        // A label in the middle of the query never activates a filter.
+        assert_eq!(OthersFilter::parse("deploy cmd"), (None, "deploy cmd"));
+    }
+
+    #[test]
+    fn test_others_filter_dot_and_dot_label_combo() {
+        assert_eq!(
+            OthersFilter::parse(".deploy"),
+            (Some(OthersFilter::Content), "deploy")
+        );
+        // `.file ` narrows past content down to the file source.
+        assert_eq!(
+            OthersFilter::parse(".file todo"),
+            (Some(OthersFilter::Source(OtherSource::File)), "todo")
+        );
     }
 
     #[test]

@@ -432,11 +432,13 @@ pub fn build_content_items(
 
 /// Base list for the Others tab: pane-state records (cmd/ssh/cwd) and
 /// pane-buffer content matches in ONE list. A plain query searches both —
-/// buffers by substring, state rows fuzzy — while a leading `.` narrows the
-/// search to buffer content only (explicit content filter).
+/// buffers by substring, state rows fuzzy. The query may carry a narrowing
+/// filter prefix (`.` = buffer content only, `cmd `/`ssh `/`cwd `/`file `/
+/// `term ` = that source only).
 ///
 /// Returns the query to fuzzy-rank and highlight with, plus the unranked
-/// combined rows. An empty query lists state records alone (an excerpt
+/// rows. With an empty needle, filtered state rows still list (so `ssh `
+/// alone shows every ssh pane); filtered content rows do not (an excerpt
 /// needs a needle).
 pub fn build_others_base(
     nodes: &[NavigationNode],
@@ -445,41 +447,53 @@ pub fn build_others_base(
     opts: &BuildOptions,
     query: &str,
 ) -> (String, Vec<DisplayItem>) {
-    match query.strip_prefix('.') {
-        Some(rest) => {
-            let needle = rest.trim();
-            let items = if needle.is_empty() {
-                Vec::new()
-            } else {
-                build_content_items(
-                    nodes,
-                    contents,
-                    others,
-                    opts.pane_ts,
-                    opts.active_pane_id,
-                    opts.self_pane_id,
-                    needle,
-                )
-            };
-            (needle.to_string(), items)
+    let (filter, rest) = crate::models::OthersFilter::parse(query);
+    let needle = rest.trim();
+    let content_rows = |n: &str| {
+        if n.is_empty() {
+            Vec::new()
+        } else {
+            build_content_items(
+                nodes,
+                contents,
+                others,
+                opts.pane_ts,
+                opts.active_pane_id,
+                opts.self_pane_id,
+                n,
+            )
         }
+    };
+    let by_source =
+        |items: Vec<DisplayItem>, src: crate::models::OtherSource| -> Vec<DisplayItem> {
+            items
+                .into_iter()
+                .filter(|it| matches!(it, DisplayItem::Other { source, .. } if *source == src))
+                .collect()
+        };
+
+    let items = match filter {
+        Some(crate::models::OthersFilter::Source(src)) => match src {
+            crate::models::OtherSource::File | crate::models::OtherSource::Terminal => {
+                by_source(content_rows(needle), src)
+            }
+            _ => by_source(build_display_list(nodes, opts, &CategoryTab::Others), src),
+        },
+        Some(crate::models::OthersFilter::Content) => content_rows(needle),
         None => {
             let mut items = build_display_list(nodes, opts, &CategoryTab::Others);
-            let needle = query.trim();
             if !needle.is_empty() {
-                items.extend(build_content_items(
-                    nodes,
-                    contents,
-                    others,
-                    opts.pane_ts,
-                    opts.active_pane_id,
-                    opts.self_pane_id,
-                    needle,
-                ));
+                items.extend(content_rows(needle));
             }
-            (query.to_string(), items)
+            items
         }
-    }
+    };
+    let ranked_query = if filter.is_some() {
+        needle.to_string()
+    } else {
+        query.to_string()
+    };
+    (ranked_query, items)
 }
 
 /// Fuzzy-search display items by their search_text.
@@ -1217,6 +1231,67 @@ mod tests {
         // Bare `.`: empty needle, nothing to show.
         let (q, items) = build_others_base(&nodes, &contents, &others, &opts, ".");
         assert_eq!(q, "");
+        assert!(items.is_empty());
+    }
+
+    /// Source filters narrow to one record type: `cmd ` alone lists every cmd
+    /// row; `file ` filters content rows down to file buffers.
+    #[test]
+    fn test_build_others_base_source_filters() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let mut contents = HashMap::new();
+        contents.insert(
+            "pane-4".to_string(),
+            "Started DeployService on 8081\n".to_string(),
+        );
+        // pane-4 edits a file (nvim), so its buffer match types as `file`.
+        let mut others = others_map();
+        others.insert(
+            "pane-4".into(),
+            PaneOthers {
+                cwd: Some("/repo/auth".into()),
+                command: Some("nvim src/main.rs".into()),
+                ssh_target: Some("deploy@10.1.2.3:2222".into()),
+            },
+        );
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+        let sources = |items: &[DisplayItem]| -> Vec<crate::models::OtherSource> {
+            items
+                .iter()
+                .filter_map(|it| match it {
+                    DisplayItem::Other { source, .. } => Some(*source),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // `cmd ` with no needle: every cmd row, nothing else.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "cmd ");
+        assert_eq!(q, "");
+        assert_eq!(sources(&items), vec![crate::models::OtherSource::Cmd]);
+
+        // `ssh deploy`: ssh rows only, ranked by the remaining text.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ssh deploy");
+        assert_eq!(q, "deploy");
+        assert_eq!(sources(&items), vec![crate::models::OtherSource::Ssh]);
+
+        // `file deploy`: content match typed `file`, no state rows.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "file deploy");
+        assert_eq!(q, "deploy");
+        assert_eq!(sources(&items), vec![crate::models::OtherSource::File]);
+
+        // `file ` with no needle: excerpts need a match, so nothing shows.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &opts, "file ");
         assert!(items.is_empty());
     }
 

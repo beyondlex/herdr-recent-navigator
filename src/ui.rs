@@ -1,5 +1,7 @@
 use crate::format::*;
-use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource};
+use crate::models::{
+    AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -197,16 +199,14 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(chunks[2]);
     render_column_header(frame, &state.current_category, list_chunks[0], &p, narrow);
-    // With a leading `.` the Others rows are keyed by the stripped query
-    // (their `detail` carries the buffer excerpt), so highlight with that —
-    // matching the raw `.`-query against the excerpt would find nothing.
-    let highlight_query = match state.current_category {
-        CategoryTab::Others
-            if state.search_query.starts_with('.') =>
-        {
-            &state.search_query[1..]
-        }
-        _ => state.search_query.as_str(),
+    // With a filter prefix (`.` / `cmd ` / …) the Others rows are keyed by
+    // the remaining text (their `detail` carries the excerpt or the matched
+    // value), so highlight with that — matching the raw query against them
+    // would find nothing.
+    let highlight_query = if state.current_category == CategoryTab::Others {
+        OthersFilter::parse(&state.search_query).1
+    } else {
+        state.search_query.as_str()
     };
     render_list(
         frame,
@@ -272,12 +272,15 @@ fn render_search(
     p: &Palette,
 ) {
     let prefix = " > ";
-    let is_empty = state.search_query.is_empty();
-    let text = if is_empty {
-        "type to filter..."
+    // In the Others tab a filter prefix (`cmd `, `.`, …) is lifted out of the
+    // query and shown as a badge chip; the rest is the live search text.
+    let (filter, rest) = if state.current_category == CategoryTab::Others {
+        OthersFilter::parse(&state.search_query)
     } else {
-        &state.search_query
+        (None, state.search_query.as_str())
     };
+    let is_empty = rest.is_empty();
+    let text = if is_empty { "type to filter..." } else { rest };
     let count_str = if is_empty {
         format!("{}", total)
     } else {
@@ -289,19 +292,31 @@ fn render_search(
     } else {
         Style::default().fg(p.text)
     };
+    let badge_w = match filter {
+        Some(f) => {
+            let label = match f {
+                OthersFilter::Content => "content".len(),
+                OthersFilter::Source(src) => src.label().len(),
+            };
+            label + 4 // chip padding (" x ") + separator space
+        }
+        None => 0,
+    };
     let padding_right = 2;
-    let line = Line::from(vec![
-        Span::styled(format!("{}{}", prefix, text), text_style),
-        Span::styled(
-            " ".repeat(area.width.saturating_sub(
-                (prefix.len() + text.len() + count_str.len() + padding_right) as u16,
-            ) as usize),
-            Style::default(),
-        ),
-        Span::styled(count_str, Style::default().fg(p.overlay0)),
-    ]);
+    let pad = area.width.saturating_sub(
+        (prefix.len() + badge_w + text.len() + count_str.len() + padding_right) as u16,
+    ) as usize;
+
+    let mut spans = vec![Span::styled(prefix, text_style)];
+    if let Some(f) = filter {
+        spans.push(filter_chip(f, p));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(text.to_string(), text_style));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(count_str, Style::default().fg(p.overlay0)));
     frame.render_widget(
-        Paragraph::new(line)
+        Paragraph::new(Line::from(spans))
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
@@ -310,6 +325,21 @@ fn render_search(
             .style(Style::default().fg(p.text)),
         area,
     );
+}
+
+/// Colored chip shown left of the input while an Others filter is active.
+fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
+    let (label, color) = match f {
+        OthersFilter::Content => ("content", p.accent),
+        OthersFilter::Source(src) => (src.label(), source_color(&src, p)),
+    };
+    Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(p.surface_dim)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 fn render_column_header(
@@ -738,16 +768,19 @@ fn row_pane(
 }
 
 /// Per-source color so the Type column is scannable at a glance.
-fn source_style(source: &OtherSource, p: &Palette) -> Style {
-    let c = match source {
+fn source_color(source: &OtherSource, p: &Palette) -> Color {
+    match source {
         OtherSource::Ssh => p.teal,
         OtherSource::Cmd => p.yellow,
         OtherSource::File => p.mauve,
         OtherSource::Terminal => p.blue,
         OtherSource::Cwd => p.green,
-    };
+    }
+}
+
+fn source_style(source: &OtherSource, p: &Palette) -> Style {
     Style::default()
-        .fg(c)
+        .fg(source_color(source, p))
         .add_modifier(Modifier::BOLD)
 }
 
