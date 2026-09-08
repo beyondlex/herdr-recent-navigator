@@ -196,8 +196,13 @@ pub enum DisplayItem {
         tab: String,
         workspace: String,
         source: OtherSource,
-        /// The matched/runtime value: command line, ssh target, or cwd path.
+        /// The matched/runtime value: command line, ssh target, cwd path,
+        /// or a content-search excerpt.
         detail: String,
+        /// Where the record lives, shown in the Context column: the edited
+        /// file path (`file`), the pane's cwd (`cmd`), the connected host
+        /// (`ssh`), or `-` when not applicable (`cwd`/`term`).
+        context: String,
         last_accessed_at: u64,
     },
 }

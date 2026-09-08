@@ -328,9 +328,11 @@ fn render_column_header(
         CategoryTab::Tabs => (&["Tab", "Workspace", "Agent"], 1, &col_layout::TAB),
         CategoryTab::Agents => (&["Agent", "Tab", "Workspace"], 2, &col_layout::AGENT),
         CategoryTab::Workspaces => (&["Workspace", "Agent"], 1, &col_layout::WORKSPACE),
-        CategoryTab::Others => {
-            (&["Type", "Detail", "Pane", "Tab", "Workspace"], 1, &col_layout::OTHER)
-        }
+        CategoryTab::Others => (
+            &["Type", "Detail", "Context", "Tab", "Workspace"],
+            1,
+            &col_layout::OTHER,
+        ),
     };
     let cols = Layout::horizontal(constraints)
         .flex(Flex::Start)
@@ -425,13 +427,13 @@ DisplayItem::Pane {
                 ..
             } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
             DisplayItem::Other {
-                pane_name,
                 source,
                 detail,
+                context,
                 tab,
                 workspace,
                 ..
-            } => row_other(i, source, detail, pane_name, tab, workspace, &row_ctx),
+            } => row_other(i, source, detail, context, tab, workspace, &row_ctx),
         }
         })
         .collect();
@@ -585,9 +587,9 @@ mod col_layout {
     pub const OTHER: [Constraint; 6] = [
         IDX,
         Constraint::Length(6),
-        Constraint::Percentage(30),
-        Constraint::Percentage(22),
-        Constraint::Percentage(18),
+        Constraint::Percentage(26),
+        Constraint::Percentage(26),
+        Constraint::Percentage(16),
         Constraint::Percentage(24),
     ];
 }
@@ -753,7 +755,7 @@ fn row_other(
     i: usize,
     source: &OtherSource,
     detail: &str,
-    pn: &str,
+    context: &str,
     tab: &str,
     ws: &str,
     ctx: &RowCtx,
@@ -778,7 +780,15 @@ fn row_other(
     sp.push(Span::raw(" ".repeat(pad)));
 
     sp.extend(col_spans(detail, &cols[2], ctx.query, ns, hl));
-    sp.extend(col_spans(pn, &cols[3], ctx.query, cs, hl));
+    // Context (file path etc.): front-truncate so the tail — basename and
+    // `:line` — stays visible; `-` ("no context") sits dimmer.
+    if context == "-" {
+        let dim = Style::default().fg(if ctx.sel { ctx.p.text } else { ctx.p.overlay1 });
+        sp.extend(col_spans(context, &cols[3], "", dim, hl));
+    } else {
+        let display = truncate_front(context, cols[3].width as usize);
+        sp.extend(col_spans(&display, &cols[3], ctx.query, cs, hl));
+    }
     sp.extend(col_spans(tab, &cols[4], ctx.query, cs, hl));
     sp.extend(col_spans(ws, &cols[5], ctx.query, cs, hl));
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))

@@ -281,6 +281,8 @@ fn build_pane_items(
 /// emits one `DisplayItem::Other` per available source: `ssh` target, `cmd`
 /// foreground command (shells suppressed), and `cwd`. Records inherit the
 /// pane's MRU timestamp and are ordered by source priority within a pane.
+/// The Context column locates the record: connected host (`ssh`), the pane's
+/// cwd (`cmd`), or `-` (`cwd` — the detail already is the cwd).
 fn build_other_items(
     nodes: &[&NavigationNode],
     ts_map: &HashMap<String, u64>,
@@ -305,7 +307,7 @@ fn build_other_items(
             .clone()
             .unwrap_or_else(|| n.pane_id.clone());
 
-        let mut push = |source: crate::models::OtherSource, detail: &str| {
+        let mut push = |source: crate::models::OtherSource, detail: &str, context: String| {
             items.push(DisplayItem::Other {
                 pane_id: n.pane_id.clone(),
                 pane_name: pane_name.clone(),
@@ -313,24 +315,45 @@ fn build_other_items(
                 workspace: n.workspace_name.clone(),
                 source,
                 detail: detail.to_string(),
+                context,
                 last_accessed_at: ts,
             });
         };
 
         if let Some(ssh) = &o.ssh_target {
-            push(crate::models::OtherSource::Ssh, ssh);
+            // Context shows the connected target with the login user stripped.
+            let host = ssh.rsplit('@').next().unwrap_or(ssh);
+            push(crate::models::OtherSource::Ssh, ssh, host.to_string());
         }
         if let Some(cmd) = &o.command
-                && !crate::others::command_is_shell(cmd)
-            {
-                push(crate::models::OtherSource::Cmd, cmd);
-            }
+            && !crate::others::command_is_shell(cmd)
+        {
+            let cwd = o.cwd.clone().unwrap_or_else(|| "-".into());
+            push(crate::models::OtherSource::Cmd, cmd, cwd);
+        }
         if let Some(cwd) = &o.cwd {
-            push(crate::models::OtherSource::Cwd, cwd);
+            push(crate::models::OtherSource::Cwd, cwd, "-".to_string());
         }
     }
     mru_sort(&mut items);
     items
+}
+
+/// Build the Context value for a `file` row: the edited path (made absolute
+/// with the pane's cwd when relative) plus `:line` when derivable.
+fn file_context(path: String, line: Option<u32>, cwd: Option<&str>) -> String {
+    let abs = if path.starts_with('/') {
+        path
+    } else {
+        match cwd {
+            Some(c) => format!("{}/{}", c.trim_end_matches('/'), path),
+            None => path,
+        }
+    };
+    match line {
+        Some(l) => format!("{abs}:{l}"),
+        None => abs,
+    }
 }
 
 /// Build the base list for `.`-prefixed content search in the Others tab:
@@ -342,6 +365,8 @@ fn build_other_items(
 /// excerpt is the buffer's file content) from panes showing plain terminal or
 /// command output (`term`), based on the pane's foreground command in `others`
 /// (falling back to the pane label when the lazy state hasn't been fetched).
+/// A `file` row's Context is the edited path — `:line` when the command
+/// carries one — made absolute with the pane's cwd; everything else gets `-`.
 pub fn build_content_items(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
@@ -366,19 +391,29 @@ pub fn build_content_items(
             continue;
         };
         let title = n.pane_name.as_deref().unwrap_or_default();
-        let editing_file = !crate::others::is_shell_prompt_title(title)
-            && others
-                .get(&n.pane_id)
-                .and_then(|o| o.command.as_deref())
-                .map(crate::others::command_is_editor)
-                .unwrap_or_else(|| crate::others::command_is_editor(title));
+        let state = others.get(&n.pane_id);
+        let command = state.and_then(|o| o.command.as_deref());
+        // The command line that makes this a file row: the foreground command,
+        // or the pane label (often the editor cmdline) when process state is
+        // not fetched yet.
+        let editor_cmd = match command {
+            Some(c) if crate::others::command_is_editor(c) => Some(c),
+            None if crate::others::command_is_editor(title) => Some(title),
+            _ => None,
+        };
+        let editing_file = !crate::others::is_shell_prompt_title(title) && editor_cmd.is_some();
+        let context = if editing_file {
+            editor_cmd
+                .and_then(crate::others::parse_editor_target)
+                .map(|(path, line)| file_context(path, line, state.and_then(|o| o.cwd.as_deref())))
+                .unwrap_or_else(|| "-".to_string())
+        } else {
+            "-".to_string()
+        };
         let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
         items.push(DisplayItem::Other {
             pane_id: n.pane_id.clone(),
-            pane_name: n
-                .pane_name
-                .clone()
-                .unwrap_or_else(|| n.pane_id.clone()),
+            pane_name: n.pane_name.clone().unwrap_or_else(|| n.pane_id.clone()),
             tab: n.tab_name.clone(),
             workspace: n.workspace_name.clone(),
             source: if editing_file {
@@ -387,6 +422,7 @@ pub fn build_content_items(
                 crate::models::OtherSource::Terminal
             },
             detail,
+            context,
             last_accessed_at: ts,
         });
     }
@@ -879,6 +915,50 @@ mod tests {
         );
     }
 
+    /// Context locates each record: connected host (user stripped) for ssh,
+    /// the pane cwd for cmd, `-` for cwd (detail already is the cwd).
+    #[test]
+    fn test_build_other_items_context_column() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let others = others_map();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+        let items = build_display_list(&nodes, &opts, &CategoryTab::Others);
+        let ctx_of = |pane: &str, src: crate::models::OtherSource| -> String {
+            items
+                .iter()
+                .filter_map(|it| match it {
+                    DisplayItem::Other {
+                        pane_id,
+                        source,
+                        context,
+                        ..
+                    } if pane_id == pane && *source == src => Some(context.clone()),
+                    _ => None,
+                })
+                .next()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            ctx_of("pane-4", crate::models::OtherSource::Ssh),
+            "10.1.2.3:2222"
+        );
+        assert_eq!(
+            ctx_of("pane-4", crate::models::OtherSource::Cmd),
+            "/repo/auth/config"
+        );
+        assert_eq!(ctx_of("pane-5", crate::models::OtherSource::Cwd), "-");
+    }
+
     /// Content search emits File rows only for matching panes; agent panes and
     /// the excluded/self panes never appear.
     #[test]
@@ -903,10 +983,14 @@ mod tests {
         assert_eq!(items.len(), 1);
         let item = &items[0];
         match item {
-            DisplayItem::Other { pane_id, source, detail, .. } => {
+            DisplayItem::Other { pane_id, source, detail, context, .. } => {
                 assert_eq!(pane_id, "pane-4");
                 assert_eq!(*source, crate::models::OtherSource::File);
                 assert!(detail.eq_ignore_ascii_case("started deployservice on 8081"));
+                assert_eq!(
+                    context, "src/main.rs",
+                    "file context = edited path (no cwd known)"
+                );
             }
             _ => panic!("expected Other item"),
         }
@@ -933,6 +1017,59 @@ mod tests {
         // No cached content for any pane → nothing to match.
         let items = build_content_items(&nodes, &HashMap::new(), &others, &empty, None, Some("pane-5"), "deployservice");
         assert!(items.is_empty());
+    }
+
+    /// A `file` row's Context is the edited path with `:line` when the
+    /// command carries one; an editor without a file argument degrades to `-`.
+    #[test]
+    fn test_build_content_items_file_context() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let mut contents = HashMap::new();
+        contents.insert("pane-4".to_string(), "deploy the service\n".to_string());
+        let mut others: HashMap<String, PaneOthers> = HashMap::new();
+        others.insert(
+            "pane-4".into(),
+            PaneOthers {
+                cwd: Some("/repo/auth".into()),
+                command: Some("nvim +328 src/main.rs".into()),
+                ssh_target: None,
+            },
+        );
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "deploy");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Other {
+                source, context, ..
+            } => {
+                assert_eq!(*source, crate::models::OtherSource::File);
+                assert_eq!(context, "/repo/auth/src/main.rs:328");
+            }
+            _ => panic!("expected Other item"),
+        }
+
+        // Editor with no file argument: still a `file` row, Context is `-`.
+        others.insert(
+            "pane-5".into(),
+            PaneOthers {
+                cwd: None,
+                command: Some("hx".into()),
+                ssh_target: None,
+            },
+        );
+        contents.insert("pane-5".to_string(), "term output deploy\n".to_string());
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "deploy");
+        let pane5 = items
+            .iter()
+            .find(|it| matches!(it, DisplayItem::Other { pane_id, .. } if pane_id == "pane-5"))
+            .expect("pane-5 matched");
+        assert_eq!(
+            match pane5 {
+                DisplayItem::Other { context, .. } => context.as_str(),
+                _ => unreachable!(),
+            },
+            "-"
+        );
     }
 
     /// A shell-prompt-shaped pane title is a reverse signal: the pane is a
@@ -982,6 +1119,7 @@ mod tests {
                 workspace: "main".into(),
                 source: crate::models::OtherSource::Ssh,
                 detail: "ssh -p 2222 deploy@app-server-01".into(),
+                context: "-".into(),
                 last_accessed_at: 2000,
             },
             DisplayItem::Other {
@@ -991,6 +1129,7 @@ mod tests {
                 workspace: "app-server-01-prod".into(),
                 source: crate::models::OtherSource::Cmd,
                 detail: "tail -f /var/log/app.log".into(),
+                context: "-".into(),
                 last_accessed_at: 1000,
             },
         ];

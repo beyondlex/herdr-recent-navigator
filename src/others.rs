@@ -135,6 +135,68 @@ pub fn command_is_editor(cmd: &str) -> bool {
     EDITOR_NAMES.contains(&base)
 }
 
+/// Editor options that consume the NEXT token as their value, so that token
+/// is not the file path (`nvim -u init.lua f.md`, `vim -S sess.vim f.md`).
+const EDITOR_OPTS_WITH_VALUE: &[&str] = &["-u", "-U", "-i", "-S", "-c", "-l", "-f", "--cmd"];
+
+/// A positional token that can plausibly be a file path. Rejects shell-quote
+/// or shell-syntax residue — notably the spilled tail of a vim `+cmd` with
+/// embedded spaces (`nvim +'lua print(1)' f.md` splits into junk tokens).
+fn token_is_pathlike(t: &str) -> bool {
+    !t.chars()
+        .any(|c| matches!(c, '\'' | '"' | '`' | '(' | ')' | ';' | '|' | '&' | '$'))
+}
+
+/// Extract the file being edited — with the line number when derivable — from
+/// a foreground editor command line. Recognized shapes: a positional path
+/// token (`nvim src/main.rs`), a vim/nvim `+328` line flag anywhere in the
+/// args, and a `path:328` suffix (`code -g src/app.rs:328`). Options are
+/// skipped; value-taking options also skip the following token.
+///
+/// Returns `(path, line)`. `line` is `None` when the command gives no hint.
+pub fn parse_editor_target(cmd: &str) -> Option<(String, Option<u32>)> {
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let mut path: Option<String> = None;
+    let mut line: Option<u32> = None;
+    let mut i = 1; // skip the binary itself
+    while i < tokens.len() {
+        let t = tokens[i];
+        if let Some(digits) = t.strip_prefix('+') {
+            // Any `+cmd` form is a vim/nvim command, never a path; only the
+            // all-digits `+328` carries a line number.
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                line = digits.parse().ok().or(line);
+            }
+            i += 1;
+            continue;
+        }
+        if t.starts_with('-') && t.len() > 1 {
+            // A value-taking option swallows the next token too.
+            i += usize::from(EDITOR_OPTS_WITH_VALUE.contains(&t)) + 1;
+            continue;
+        }
+        if path.is_none() && token_is_pathlike(t) {
+            // `path:line` (code -g / helix style) — split the suffix off.
+            if let Some((p, l)) = t.rsplit_once(':')
+                && !p.is_empty()
+                && !l.is_empty()
+                && l.chars().all(|c| c.is_ascii_digit())
+            {
+                path = Some(p.to_string());
+                line = l.parse().ok().or(line);
+            } else {
+                path = Some(t.to_string());
+            }
+        }
+        i += 1;
+    }
+    let path = path?;
+    Some((path, line))
+}
+
 /// True when a pane title looks like a shell prompt (`user@host: cwd`),
 /// the OSC title shells set as their window title by default
 /// (e.g. `you@work-host: ~/repo`, `deploy@10.0.0.5:/opt/app`).
@@ -494,5 +556,80 @@ mod tests {
         assert!(!command_is_editor("ssh prod@10.9.9.9"));
         assert!(!command_is_editor(""));
         assert!(!command_is_editor("docker compose up -d"));
+    }
+
+    // ── parse_editor_target ──
+
+    #[test]
+    fn editor_file_arg_is_path() {
+        assert_eq!(
+            parse_editor_target("nvim src/main.rs"),
+            Some(("src/main.rs".into(), None))
+        );
+        assert_eq!(
+            parse_editor_target("/usr/local/bin/nvim plans/x.md"),
+            Some(("plans/x.md".into(), None))
+        );
+        assert_eq!(
+            parse_editor_target("code --wait src/app.rs"),
+            Some(("src/app.rs".into(), None))
+        );
+        assert_eq!(
+            parse_editor_target("emacs -nw README.md"),
+            Some(("README.md".into(), None))
+        );
+    }
+
+    #[test]
+    fn editor_plus_flag_yields_line() {
+        assert_eq!(
+            parse_editor_target("nvim +328 plans/x.mdx"),
+            Some(("plans/x.mdx".into(), Some(328)))
+        );
+        // `+cmd` may also trail the file argument.
+        assert_eq!(
+            parse_editor_target("vim file.md +42"),
+            Some(("file.md".into(), Some(42)))
+        );
+        // Non-numeric `+cmd` is ignored, not taken as a path.
+        assert_eq!(
+            parse_editor_target("nvim +/pattern file.md"),
+            Some(("file.md".into(), None))
+        );
+        assert_eq!(
+            parse_editor_target("nvim +'lua print(1)' file.md"),
+            Some(("file.md".into(), None))
+        );
+    }
+
+    #[test]
+    fn editor_path_line_suffix_yields_line() {
+        assert_eq!(
+            parse_editor_target("code -g src/app.rs:328"),
+            Some(("src/app.rs".into(), Some(328)))
+        );
+        assert_eq!(
+            parse_editor_target("hx /tmp/a.log:7"),
+            Some(("/tmp/a.log".into(), Some(7)))
+        );
+    }
+
+    #[test]
+    fn editor_option_values_are_not_paths() {
+        assert_eq!(
+            parse_editor_target("nvim -u init.lua file.md"),
+            Some(("file.md".into(), None))
+        );
+        assert_eq!(
+            parse_editor_target("vim -S sess.vim -c wq file.md"),
+            Some(("file.md".into(), None))
+        );
+    }
+
+    #[test]
+    fn editor_without_file_returns_none() {
+        assert_eq!(parse_editor_target("nvim"), None);
+        assert_eq!(parse_editor_target("hx"), None);
+        assert_eq!(parse_editor_target(""), None);
     }
 }
