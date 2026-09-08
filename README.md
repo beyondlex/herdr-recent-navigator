@@ -220,6 +220,22 @@ Ctrl-based combinations when possible.
 | `force_quit` | `C-c` | Close without focusing |
 | `backspace` | `Backspace` | Delete last search character |
 
+### Tab order and visibility
+
+The order of the top-level category tabs — and which tabs appear at all — is
+configured with a single array in `herdr-plugin.toml`: position is display
+order, and a tab left out of the list is hidden entirely.
+
+```toml
+[navigator]
+tabs = ["workspaces", "tabs", "panes", "agents", "others"]
+```
+
+- Valid names: `workspaces`, `tabs`, `panes`, `agents`, `others`
+- Unknown names are ignored; duplicates collapse to the first occurrence
+- At least one tab is always kept — an empty (or all-invalid) list falls back
+  to `others` only
+
 ## Usage
 
 | Key (default) | Action |

@@ -31,7 +31,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use cli::{Cli, Command as CliCommand};
-use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings};
+use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings, parse_tabs};
 
 type RunInnerResult = Result<(
     AppState,
@@ -94,7 +94,8 @@ fn main() -> Result<()> {
         if let Some(view) = &cli.view {
             // Use a dummy AppState to write the category to state.json
             if let Ok(cat) = view.parse::<CategoryTab>() {
-                let state = AppState::new(vec![], Keybindings::default());
+                let state =
+                    AppState::new(vec![], Keybindings::default(), CategoryTab::all().to_vec());
                 state.save_category(&cat);
             }
         }
@@ -242,7 +243,7 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         focused_pane_info.as_ref().map(|f| f.pane_id.clone()),
     );
 
-    let mut state = AppState::new(nodes, load_manifest_keybindings());
+    let mut state = AppState::new(nodes, load_manifest_keybindings(), load_manifest_tabs());
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback 1: read the active theme from Herdr's own config, which is where
@@ -263,6 +264,10 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         && let Ok(cat) = view.parse::<CategoryTab>()
     {
         state.current_category = cat;
+    }
+    // The persisted or `--view` tab may be hidden by the configured tab list.
+    if !state.tabs.contains(&state.current_category) {
+        state.current_category = state.tabs[0];
     }
 
     Ok((state, pane_ts, tab_ts, ws_ts, ctx, connected))
@@ -946,6 +951,39 @@ fn load_manifest_keybindings() -> Keybindings {
         }
         None => Keybindings::default(),
     }
+}
+
+/// Read the configured category tabs from the manifest's `[navigator] tabs` —
+/// one ordered array carrying both display order and visibility (a tab left
+/// out is hidden). A missing section/field means "all tabs, default order";
+/// an explicitly empty or invalid list is normalized by `parse_tabs` down to
+/// just `Others`.
+fn load_manifest_tabs() -> Vec<CategoryTab> {
+    let Some(root) = std::env::var("HERDR_PLUGIN_ROOT").ok() else {
+        return CategoryTab::all().to_vec();
+    };
+    let Ok(content) = std::fs::read_to_string(PathBuf::from(root).join("herdr-plugin.toml")) else {
+        return CategoryTab::all().to_vec();
+    };
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return CategoryTab::all().to_vec();
+    };
+    let raw: Vec<String> = value
+        .get("navigator")
+        .and_then(|n| n.get("tabs"))
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            CategoryTab::all()
+                .iter()
+                .map(|t| t.label().to_lowercase())
+                .collect()
+        });
+    parse_tabs(&raw)
 }
 
 /// Extract pane_id from `herdr plugin pane open` JSON response.

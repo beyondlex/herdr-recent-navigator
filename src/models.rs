@@ -94,7 +94,7 @@ pub struct PaneOthers {
 }
 
 /// The category tabs at the top of the navigator UI.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CategoryTab {
     Workspaces,
     Tabs,
@@ -109,7 +109,7 @@ impl CategoryTab {
     /// Number of variants, for cycling.
     pub const COUNT: usize = 5;
 
-    /// Return all variants in order.
+    /// Return all variants in the default order.
     pub fn all() -> [CategoryTab; Self::COUNT] {
         [
             CategoryTab::Workspaces,
@@ -118,28 +118,6 @@ impl CategoryTab {
             CategoryTab::Agents,
             CategoryTab::Others,
         ]
-    }
-
-    /// Move to the next tab (wrapping).
-    pub fn next(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Tabs,
-            CategoryTab::Tabs => CategoryTab::Panes,
-            CategoryTab::Panes => CategoryTab::Agents,
-            CategoryTab::Agents => CategoryTab::Others,
-            CategoryTab::Others => CategoryTab::Workspaces,
-        }
-    }
-
-    /// Move to the previous tab (wrapping).
-    pub fn previous(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Others,
-            CategoryTab::Tabs => CategoryTab::Workspaces,
-            CategoryTab::Panes => CategoryTab::Tabs,
-            CategoryTab::Agents => CategoryTab::Panes,
-            CategoryTab::Others => CategoryTab::Agents,
-        }
     }
 
     /// Display label for the tab.
@@ -151,6 +129,27 @@ impl CategoryTab {
             CategoryTab::Panes => "Panes",
             CategoryTab::Others => "Others",
         }
+    }
+}
+
+/// Parse the configured tab list. The array carries both order and
+/// visibility: position is display order, membership is shown-at-all.
+/// Unknown labels are ignored and duplicates deduped (first wins); an empty
+/// or all-invalid list degrades to `["others"]` — the navigator must always
+/// show at least one tab.
+pub fn parse_tabs(spec: &[String]) -> Vec<CategoryTab> {
+    let mut tabs: Vec<CategoryTab> = Vec::new();
+    for s in spec {
+        if let Ok(t) = s.trim().parse::<CategoryTab>()
+            && !tabs.contains(&t)
+        {
+            tabs.push(t);
+        }
+    }
+    if tabs.is_empty() {
+        vec![CategoryTab::Others]
+    } else {
+        tabs
     }
 }
 
@@ -457,6 +456,9 @@ pub struct AppState {
     pub nodes: Vec<NavigationNode>,
     /// Currently selected category tab.
     pub current_category: CategoryTab,
+    /// Configured category tabs — display order and visibility combined
+    /// (parsed from `[navigator] tabs`). Always non-empty.
+    pub tabs: Vec<CategoryTab>,
     /// Search input text.
     pub search_query: String,
     /// Currently highlighted list index.
@@ -569,6 +571,47 @@ mod category_tab_tests {
     #[test]
     fn test_category_tab_from_str_invalid() {
         assert!("invalid".parse::<CategoryTab>().is_err());
+    }
+
+    #[test]
+    fn test_parse_tabs_full_list_is_passthrough() {
+        // (A missing/empty `[navigator]` section never reaches parse_tabs:
+        // the manifest loader substitutes the full default list first.)
+        let all: Vec<String> = CategoryTab::all()
+            .iter()
+            .map(|t| t.label().to_lowercase())
+            .collect();
+        assert_eq!(parse_tabs(&all), CategoryTab::all().to_vec());
+    }
+
+    #[test]
+    fn test_parse_tabs_reorders_and_hides() {
+        let spec = vec!["others".to_string(), "workspaces".to_string()];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::Others, CategoryTab::Workspaces]
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_dedupes_and_drops_unknown() {
+        let spec = vec![
+            "agents".to_string(),
+            "nope".to_string(),
+            " agents ".to_string(),
+            "others".to_string(),
+        ];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::Agents, CategoryTab::Others]
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_empty_or_all_invalid_keeps_others() {
+        // Nothing configured to show: the navigator must keep one tab.
+        assert_eq!(parse_tabs(&[]), vec![CategoryTab::Others]);
+        assert_eq!(parse_tabs(&["nope".to_string()]), vec![CategoryTab::Others]);
     }
 
     #[test]
