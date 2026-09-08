@@ -648,11 +648,10 @@ fn run_event_loop(
             state.cache_key = None; // others changed, invalidate cache
         }
 
-        // ── Lazy pane-buffer cache for `.` content search ──
-        let content_mode =
-            state.current_category == CategoryTab::Others && state.search_query.starts_with('.');
+        // ── Lazy pane-buffer cache for Others content rows ──
+        let others_tab = state.current_category == CategoryTab::Others;
         if connected
-            && content_mode
+            && others_tab
             && contents_last_fetch.elapsed() >= Duration::from_secs(30)
             && !contents_in_flight.load(Ordering::Relaxed)
         {
@@ -697,28 +696,19 @@ fn run_event_loop(
             (state.cached_displayed.clone(), state.cached_total)
         } else {
             // Cache miss: rebuild
-            let content_mode =
-                state.current_category == CategoryTab::Others && state.search_query.starts_with('.');
-            let (query, items) = if content_mode {
-                // `.`-prefixed content search: base list = panes whose buffer
-                // matches the remainder; detail column carries the excerpt.
-                let needle = state.search_query[1..].trim();
-                if needle.is_empty() {
-                    ("", Vec::new())
-                } else {
-                    (needle, mru::build_content_items(
-                        &state.nodes,
-                        &state.contents,
-                        &state.others,
-                        pane_ts,
-                        ctx.pane_id.as_deref(),
-                        ctx.self_pane_id.as_deref(),
-                        needle,
-                    ))
-                }
+            let (query, items) = if state.current_category == CategoryTab::Others {
+                // State records and buffer content matches in one list; a
+                // leading `.` narrows to buffer content only.
+                mru::build_others_base(
+                    &state.nodes,
+                    &state.contents,
+                    &state.others,
+                    &opts,
+                    &state.search_query,
+                )
             } else {
                 (
-                    state.search_query.as_str(),
+                    state.search_query.clone(),
                     mru::build_display_list(&state.nodes, &opts, &state.current_category),
                 )
             };
@@ -726,7 +716,7 @@ fn run_event_loop(
             let displayed = if query.is_empty() {
                 Rc::new(items)
             } else {
-                Rc::new(mru::search_display_items(&items, query))
+                Rc::new(mru::search_display_items(&items, &query))
             };
             // Update cache
             state.cache_key = Some(cache_key);

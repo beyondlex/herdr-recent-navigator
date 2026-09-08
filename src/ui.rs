@@ -197,8 +197,8 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(chunks[2]);
     render_column_header(frame, &state.current_category, list_chunks[0], &p, narrow);
-    // In `.`-prefixed content search the rows are keyed by the stripped query
-    // (their `detail` carries the excerpt), so highlight with that too —
+    // With a leading `.` the Others rows are keyed by the stripped query
+    // (their `detail` carries the buffer excerpt), so highlight with that —
     // matching the raw `.`-query against the excerpt would find nothing.
     let highlight_query = match state.current_category {
         CategoryTab::Others

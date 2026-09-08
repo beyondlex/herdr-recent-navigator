@@ -100,8 +100,9 @@ pub enum CategoryTab {
     Tabs,
     Agents,
     Panes,
-    /// Pane state search (cmd / ssh / cwd; `.`-prefixed queries search the
-    /// terminal buffer), excluding agent panes.
+    /// Pane state search (cmd / ssh / cwd) and pane-buffer content search in
+    /// one list; a leading `.` narrows to buffer content only. Excludes agent
+    /// panes.
     Others,
 }
 
@@ -476,7 +477,7 @@ pub struct AppState {
     pub cached_total: usize,
     /// Lazily-fetched pane runtime state for the Others tab (cmd/ssh/cwd).
     pub others: HashMap<String, PaneOthers>,
-    /// Cached ANSI-stripped pane buffers for `.`-prefixed content search.
+    /// Cached ANSI-stripped pane buffers backing the Others tab's content rows.
     pub contents: HashMap<String, String>,
 }
 

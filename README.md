@@ -256,6 +256,10 @@ to customize.
 - **Tabs**: MRU tabs within those workspaces
 - **Agents**: AI agents sorted by last activity
 - **Panes**: Individual terminal panes
+- **Others**: find panes by runtime state — ssh target, foreground command,
+  cwd — and by buffer content: any query also substring-matches pane
+  scrollback and shows a one-line excerpt around each hit. Prefix the query
+  with `.` to search buffer content only.
 
 
 ## License

@@ -430,6 +430,58 @@ pub fn build_content_items(
     items
 }
 
+/// Base list for the Others tab: pane-state records (cmd/ssh/cwd) and
+/// pane-buffer content matches in ONE list. A plain query searches both —
+/// buffers by substring, state rows fuzzy — while a leading `.` narrows the
+/// search to buffer content only (explicit content filter).
+///
+/// Returns the query to fuzzy-rank and highlight with, plus the unranked
+/// combined rows. An empty query lists state records alone (an excerpt
+/// needs a needle).
+pub fn build_others_base(
+    nodes: &[NavigationNode],
+    contents: &HashMap<String, String>,
+    others: &HashMap<String, PaneOthers>,
+    opts: &BuildOptions,
+    query: &str,
+) -> (String, Vec<DisplayItem>) {
+    match query.strip_prefix('.') {
+        Some(rest) => {
+            let needle = rest.trim();
+            let items = if needle.is_empty() {
+                Vec::new()
+            } else {
+                build_content_items(
+                    nodes,
+                    contents,
+                    others,
+                    opts.pane_ts,
+                    opts.active_pane_id,
+                    opts.self_pane_id,
+                    needle,
+                )
+            };
+            (needle.to_string(), items)
+        }
+        None => {
+            let mut items = build_display_list(nodes, opts, &CategoryTab::Others);
+            let needle = query.trim();
+            if !needle.is_empty() {
+                items.extend(build_content_items(
+                    nodes,
+                    contents,
+                    others,
+                    opts.pane_ts,
+                    opts.active_pane_id,
+                    opts.self_pane_id,
+                    needle,
+                ));
+            }
+            (query.to_string(), items)
+        }
+    }
+}
+
 /// Fuzzy-search display items by their search_text.
 pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayItem> {
     if query.is_empty() {
@@ -1105,6 +1157,67 @@ mod tests {
             },
             crate::models::OtherSource::Terminal
         );
+    }
+
+    /// Others base list: a plain query mixes state records and buffer
+    /// content matches; a leading `.` narrows to buffer content only; an
+    /// empty query lists state records alone.
+    #[test]
+    fn test_build_others_base_mixes_state_and_content() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let mut contents = HashMap::new();
+        contents.insert(
+            "pane-4".to_string(),
+            "Started DeployService on 8081\n".to_string(),
+        );
+        let others = others_map(); // pane-4: ssh + cmd records; pane-5: cwd
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+        let is_source = |items: &[DisplayItem], src: crate::models::OtherSource| {
+            items
+                .iter()
+                .any(|it| matches!(it, DisplayItem::Other { source, .. } if *source == src))
+        };
+
+        // Plain query: state records AND the buffer match are both present.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "deploy");
+        assert_eq!(q, "deploy");
+        assert!(
+            is_source(&items, crate::models::OtherSource::Ssh),
+            "state records included"
+        );
+        assert!(
+            is_source(&items, crate::models::OtherSource::Terminal),
+            "buffer match included"
+        );
+
+        // Leading `.`: buffer content only.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, ".deploy");
+        assert_eq!(q, "deploy");
+        assert!(is_source(&items, crate::models::OtherSource::Terminal));
+        assert!(
+            !is_source(&items, crate::models::OtherSource::Ssh),
+            "state records excluded in `.` mode"
+        );
+
+        // Empty query: state records alone (no needle, no excerpts).
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "");
+        assert_eq!(q, "");
+        assert_eq!(items.len(), 4, "ssh+cmd+cwd of pane-4, cwd of pane-5");
+
+        // Bare `.`: empty needle, nothing to show.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, ".");
+        assert_eq!(q, "");
+        assert!(items.is_empty());
     }
 
     /// Others ranking must favor the detail column: a workspace/tab/pane-only
