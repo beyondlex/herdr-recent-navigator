@@ -333,6 +333,67 @@ fn build_other_items(
     items
 }
 
+/// Build the base list for `.`-prefixed content search in the Others tab:
+/// one `DisplayItem::Other` per non-agent pane whose buffer matches `query`,
+/// with `detail` = a one-line excerpt around the first hit. Rows inherit the
+/// pane's MRU timestamp.
+///
+/// The Type column distinguishes panes that are editing a file (`file`, the
+/// excerpt is the buffer's file content) from panes showing plain terminal or
+/// command output (`term`), based on the pane's foreground command in `others`
+/// (falling back to the pane label when the lazy state hasn't been fetched).
+pub fn build_content_items(
+    nodes: &[NavigationNode],
+    contents: &HashMap<String, String>,
+    others: &HashMap<String, PaneOthers>,
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+    query: &str,
+) -> Vec<DisplayItem> {
+    let mut items = Vec::new();
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        if !exclude_pane(&n, exclude_pane_id, self_pane_id) {
+            continue;
+        }
+        let Some(content) = contents.get(&n.pane_id) else {
+            continue;
+        };
+        let Some(detail) = crate::others::content_excerpt(content, query) else {
+            continue;
+        };
+        let title = n.pane_name.as_deref().unwrap_or_default();
+        let editing_file = !crate::others::is_shell_prompt_title(title)
+            && others
+                .get(&n.pane_id)
+                .and_then(|o| o.command.as_deref())
+                .map(crate::others::command_is_editor)
+                .unwrap_or_else(|| crate::others::command_is_editor(title));
+        let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
+        items.push(DisplayItem::Other {
+            pane_id: n.pane_id.clone(),
+            pane_name: n
+                .pane_name
+                .clone()
+                .unwrap_or_else(|| n.pane_id.clone()),
+            tab: n.tab_name.clone(),
+            workspace: n.workspace_name.clone(),
+            source: if editing_file {
+                crate::models::OtherSource::File
+            } else {
+                crate::models::OtherSource::Terminal
+            },
+            detail,
+            last_accessed_at: ts,
+        });
+    }
+    mru_sort(&mut items);
+    items
+}
+
 /// Fuzzy-search display items by their search_text.
 pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayItem> {
     if query.is_empty() {
@@ -372,23 +433,24 @@ pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayIt
     })
 }
 
-/// Compute fuzzy-match byte indices in `text` for the given `query`.
-/// Returns sorted character positions of each matched character.
+/// Compute fuzzy-match character indices in `text` for the given `query`,
+/// using the same case-insensitive `Pattern` matcher as row ranking so a
+/// highlighted row always shows its hits regardless of case.
+///
+/// Returns sorted, deduplicated character positions of matched characters.
 pub fn match_indices(text: &str, query: &str) -> Vec<usize> {
     if query.is_empty() {
         return vec![];
     }
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     FUZZY_MATCHER.with(|m| {
         let mut matcher = m.borrow_mut();
         let mut haystack_buf: Vec<char> = Vec::new();
-        let mut needle_buf: Vec<char> = Vec::new();
         let haystack = nucleo_matcher::Utf32Str::new(text, &mut haystack_buf);
-        let needle = nucleo_matcher::Utf32Str::new(query, &mut needle_buf);
         let mut raw_indices: Vec<u32> = Vec::new();
-        if matcher
-            .fuzzy_indices(haystack, needle, &mut raw_indices)
-            .is_some()
-        {
+        if pattern.indices(haystack, &mut matcher, &mut raw_indices).is_some() {
+            raw_indices.sort_unstable();
+            raw_indices.dedup();
             raw_indices.into_iter().map(|i| i as usize).collect()
         } else {
             vec![]
@@ -817,6 +879,97 @@ mod tests {
         );
     }
 
+    /// Content search emits File rows only for matching panes; agent panes and
+    /// the excluded/self panes never appear.
+    #[test]
+    fn test_build_content_items_matches_and_excludes() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let mut contents = HashMap::new();
+        contents.insert("pane-4".to_string(), "Started DeployService on 8081\nnext line\n".to_string());
+        contents.insert("pane-3".to_string(), "hot text here\n".to_string()); // agent pane
+        // pane-4 is editing a file, pane-5 shows terminal output.
+        let mut others: HashMap<String, PaneOthers> = HashMap::new();
+        others.insert(
+            "pane-4".into(),
+            PaneOthers { cwd: None, command: Some("nvim src/main.rs".into()), ssh_target: None },
+        );
+        others.insert(
+            "pane-5".into(),
+            PaneOthers { cwd: None, command: Some("-zsh".into()), ssh_target: None },
+        );
+
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, Some("pane-5"), "deployservice");
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        match item {
+            DisplayItem::Other { pane_id, source, detail, .. } => {
+                assert_eq!(pane_id, "pane-4");
+                assert_eq!(*source, crate::models::OtherSource::File);
+                assert!(detail.eq_ignore_ascii_case("started deployservice on 8081"));
+            }
+            _ => panic!("expected Other item"),
+        }
+
+        // A terminal-output pane is typed `term`, not `file`.
+        contents.insert("pane-5".to_string(), "deploy failed: connection refused\n".to_string());
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "deploy");
+        let pane5 = items
+            .iter()
+            .find(|it| matches!(it, DisplayItem::Other { pane_id, .. } if pane_id == "pane-5"))
+            .expect("pane-5 matched");
+        assert_eq!(
+            match pane5 {
+                DisplayItem::Other { source, .. } => *source,
+                _ => unreachable!(),
+            },
+            crate::models::OtherSource::Terminal
+        );
+
+        // No match → empty list; agent/content never searched.
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, Some("pane-5"), "zzz-no");
+        assert!(items.is_empty());
+
+        // No cached content for any pane → nothing to match.
+        let items = build_content_items(&nodes, &HashMap::new(), &others, &empty, None, Some("pane-5"), "deployservice");
+        assert!(items.is_empty());
+    }
+
+    /// A shell-prompt-shaped pane title is a reverse signal: the pane is a
+    /// terminal even when the foreground command names an editor binary.
+    #[test]
+    fn test_shell_prompt_title_overrides_editor_command() {
+        let mut nodes = sample_nodes();
+        nodes.push(NavigationNode {
+            workspace_id: "ws-5".into(),
+            workspace_name: "Ops".into(),
+            tab_id: "tab-pane-6".into(),
+            tab_name: "Main".into(),
+            pane_id: "pane-6".into(),
+            pane_name: Some("user@192.168.4.1:~/ops/logs".into()),
+            agent_id: None,
+            agent_status: AgentStatus::None,
+            last_accessed_at: 900,
+        });
+        let empty = HashMap::new();
+        let mut contents = HashMap::new();
+        contents.insert("pane-6".to_string(), "ERROR: auth token expired\n".to_string());
+        let mut others = HashMap::new();
+        others.insert(
+            "pane-6".into(),
+            PaneOthers { cwd: None, command: Some("vim dump.log".into()), ssh_target: None },
+        );
+        let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "token");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            match &items[0] {
+                DisplayItem::Other { source, .. } => *source,
+                _ => unreachable!(),
+            },
+            crate::models::OtherSource::Terminal
+        );
+    }
+
     /// Others ranking must favor the detail column: a workspace/tab/pane-only
     /// fuzzy hit must not outrank a row whose detail fully matches the query.
     #[test]
@@ -907,5 +1060,37 @@ mod tests {
         let text = ssh_record.search_text();
         assert!(text.starts_with("ssh "), "source label first: {text}");
         assert!(text.contains("deploy@10.1.2.3:2222"));
+    }
+
+    /// Regression: highlight must not panic on the content that crashed the
+    /// TUI with `.Rep` (nucleo case-sensitive `fuzzy_indices` assert fired on
+    /// this haystack; `Pattern` + Ignore, which ranks rows, is safe).
+    #[test]
+    fn test_match_indices_no_panic_on_regression_text() {
+        // The exact hit that reproduced the crash: needle `Rep` vs the detail
+        // excerpt from an nvim pane buffer.
+        let text = "ERROR: Repository not found.";
+        let idx = match_indices(text, "Rep");
+        assert!(!idx.is_empty(), "Rep is present in {text:?}");
+        let needles = ["R", "Re", "Rep", "th", "thers", "Others"];
+        for q in needles {
+            let _ = match_indices(text, q);
+        }
+    }
+
+    /// Matches should be case-insensitive, consistent with row ranking
+    /// (`Pattern::parse(.., CaseMatching::Ignore, ..)`).
+    #[test]
+    fn test_match_indices_is_case_insensitive() {
+        assert_eq!(
+            match_indices("Permission denied", "permission"),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
+        assert_eq!(
+            match_indices("Permission denied", "PERMISSION"),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
+        assert_eq!(match_indices("Others", "others"), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(match_indices("others", "Others"), vec![0, 1, 2, 3, 4, 5]);
     }
 }

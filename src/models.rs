@@ -41,17 +41,19 @@ pub struct NavigationNode {
 }
 
 /// The source kind of an "Others" row: which runtime state dimension a pane
-/// record represents. Not identity — `cmd`/`ssh`/`cwd` describe what the pane
-/// is doing/where it is. `File` is reserved for the deferred title/statusline
-/// parsing.
+/// record represents. Not identity — `cmd`/`ssh`/`cwd`/`file` describe what
+/// the pane is doing/where it is/what it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OtherSource {
     /// Among the running foreground command (detail = the command line).
     Cmd,
     /// Active ssh/mosh login target (detail = `user@host` or `host:port`).
     Ssh,
-    /// A file the pane is currently editing (deferred — detail = file path).
-    #[allow(dead_code)]
+    /// Terminal/command-output buffer match (detail = a one-line excerpt
+    /// around the hit). The pane is NOT editing a file.
+    Terminal,
+    /// Editor buffer match (detail = a one-line excerpt around the hit).
+    /// The pane's foreground is an editor, so the excerpt is file content.
     File,
     /// The pane's current directory.
     Cwd,
@@ -63,6 +65,7 @@ impl OtherSource {
         match self {
             OtherSource::Cmd => "cmd",
             OtherSource::Ssh => "ssh",
+            OtherSource::Terminal => "term",
             OtherSource::File => "file",
             OtherSource::Cwd => "cwd",
         }
@@ -73,8 +76,9 @@ impl OtherSource {
         match self {
             OtherSource::Ssh => 0,
             OtherSource::Cmd => 1,
-            OtherSource::File => 2,
-            OtherSource::Cwd => 3,
+            OtherSource::Terminal => 2,
+            OtherSource::File => 3,
+            OtherSource::Cwd => 4,
         }
     }
 }
@@ -96,7 +100,8 @@ pub enum CategoryTab {
     Tabs,
     Agents,
     Panes,
-    /// Pane runtime state search (cmd / ssh / cwd), excluding agent panes.
+    /// Pane state search (cmd / ssh / cwd; `.`-prefixed queries search the
+    /// terminal buffer), excluding agent panes.
     Others,
 }
 
@@ -464,6 +469,8 @@ pub struct AppState {
     pub cached_total: usize,
     /// Lazily-fetched pane runtime state for the Others tab (cmd/ssh/cwd).
     pub others: HashMap<String, PaneOthers>,
+    /// Cached ANSI-stripped pane buffers for `.`-prefixed content search.
+    pub contents: HashMap<String, String>,
 }
 
 fn state_file_path() -> PathBuf {
@@ -575,6 +582,7 @@ mod other_source_tests {
         assert_eq!(OtherSource::Cmd.label(), "cmd");
         assert_eq!(OtherSource::Cwd.label(), "cwd");
         assert_eq!(OtherSource::File.label(), "file");
+        assert_eq!(OtherSource::Terminal.label(), "term");
     }
 
     #[test]

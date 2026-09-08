@@ -579,6 +579,12 @@ fn run_event_loop(
     let others_in_flight = Arc::new(AtomicBool::new(false));
     let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
 
+    // Lazy pane-buffer cache for `.`-prefixed content search in the Others tab.
+    // Fetched only while a dot query is active; one `pane read` per uncached pane.
+    let (contents_tx, contents_rx) = mpsc::channel();
+    let contents_in_flight = Arc::new(AtomicBool::new(false));
+    let mut contents_last_fetch = Instant::now() - Duration::from_secs(31); // fire immediately
+
     loop {
         // ── Periodic data refresh (non-blocking, background thread) ──
         if connected
@@ -637,6 +643,32 @@ fn run_event_loop(
             state.cache_key = None; // others changed, invalidate cache
         }
 
+        // ── Lazy pane-buffer cache for `.` content search ──
+        let content_mode =
+            state.current_category == CategoryTab::Others && state.search_query.starts_with('.');
+        if connected
+            && content_mode
+            && contents_last_fetch.elapsed() >= Duration::from_secs(30)
+            && !contents_in_flight.load(Ordering::Relaxed)
+        {
+            contents_last_fetch = Instant::now();
+            contents_in_flight.store(true, Ordering::Relaxed);
+            let nodes = state.nodes.clone();
+            let mut contents = state.contents.clone();
+            let self_pane_id = ctx.self_pane_id.clone();
+            let tx = contents_tx.clone();
+            let flag = contents_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = crate::ipc::refresh_contents(&nodes, &mut contents, self_pane_id.as_deref());
+                let _ = tx.send(contents);
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(fresh_contents) = contents_rx.try_recv() {
+            state.contents = fresh_contents;
+            state.cache_key = None; // contents changed, invalidate cache
+        }
+
         // ── Build display list once, shared by render + event handler ──
         let opts = mru::BuildOptions {
             pane_ts,
@@ -660,12 +692,36 @@ fn run_event_loop(
             (state.cached_displayed.clone(), state.cached_total)
         } else {
             // Cache miss: rebuild
-            let items = mru::build_display_list(&state.nodes, &opts, &state.current_category);
+            let content_mode =
+                state.current_category == CategoryTab::Others && state.search_query.starts_with('.');
+            let (query, items) = if content_mode {
+                // `.`-prefixed content search: base list = panes whose buffer
+                // matches the remainder; detail column carries the excerpt.
+                let needle = state.search_query[1..].trim();
+                if needle.is_empty() {
+                    ("", Vec::new())
+                } else {
+                    (needle, mru::build_content_items(
+                        &state.nodes,
+                        &state.contents,
+                        &state.others,
+                        pane_ts,
+                        ctx.pane_id.as_deref(),
+                        ctx.self_pane_id.as_deref(),
+                        needle,
+                    ))
+                }
+            } else {
+                (
+                    state.search_query.as_str(),
+                    mru::build_display_list(&state.nodes, &opts, &state.current_category),
+                )
+            };
             let total = items.len();
-            let displayed = if state.search_query.is_empty() {
+            let displayed = if query.is_empty() {
                 Rc::new(items)
             } else {
-                Rc::new(mru::search_display_items(&items, &state.search_query))
+                Rc::new(mru::search_display_items(&items, query))
             };
             // Update cache
             state.cache_key = Some(cache_key);
@@ -983,7 +1039,11 @@ mod integration_tests {
     #[test]
     fn test_run_inner_with_mock_data() {
         let cli = Cli::parse_from(["herdr-recent-navigator", "--mock"]);
-        let result = run_inner(&cli);
+        let mut result = None;
+        crate::test_helpers::with_temp_dir(|_| {
+            result = Some(run_inner(&cli));
+        });
+        let result = result.expect("closure ran");
         assert!(result.is_ok(), "run_inner should succeed with --mock");
 
         let (state, pane_ts, tab_ts, ws_ts, ctx, connected) = result.unwrap();

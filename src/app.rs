@@ -14,6 +14,7 @@ impl AppState {
             cached_displayed: std::rc::Rc::new(Vec::new()),
             cached_total: 0,
             others: std::collections::HashMap::new(),
+            contents: std::collections::HashMap::new(),
         }
     }
 

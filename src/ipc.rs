@@ -535,6 +535,102 @@ pub fn refresh_others(
     Ok(updated)
 }
 
+/// Maximum buffered characters per pane kept for content search.
+/// Bounds the per-keystroke scan cost; herdr buffers are typically much smaller.
+const CONTENT_CAP: usize = 256 * 1024;
+
+/// Run a herdr CLI command and return the raw stdout (used for `pane read`,
+/// whose output is terminal text, not a JSON envelope).
+/// Prefers the same subprocess path as `herdr_cli`; UDS is not used because
+/// the CLI prints the pane buffer verbatim without a JSON result wrapper.
+fn herdr_cli_raw(args: &[&str]) -> Result<String> {
+    #[cfg(test)]
+    {
+        if let Some(output) = mock_io::pop_mock_output() {
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!(
+                    "mock herdr failed (exit={}): {}",
+                    output.status,
+                    stderr.trim()
+                );
+            }
+            return Ok(stdout);
+        }
+    }
+
+    let bin = herdr_bin();
+    let output = Command::new(&bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to run {} {}", bin, args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "{} {} failed (exit={}): {}",
+            bin,
+            args.join(" "),
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Fetch a pane's terminal buffer as ANSI-stripped text via `herdr pane read`.
+/// Returns `None` when the pane has no readable scrollback.
+pub fn fetch_pane_content(pane_id: &str) -> Result<Option<String>> {
+    let raw = herdr_cli_raw(&[
+        "pane",
+        "read",
+        pane_id,
+        "--source",
+        "recent-unwrapped",
+    ])?;
+    let stripped = crate::others::strip_ansi(&raw);
+    if stripped.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(stripped))
+    }
+}
+
+/// Refresh cached pane content for content search. Fetches only panes missing
+/// from `map` (existing buffers are preserved); agent panes and the navigator's
+/// own pane are skipped, mirroring the Others-tab exclusions.
+pub fn refresh_contents(
+    nodes: &[NavigationNode],
+    map: &mut HashMap<String, String>,
+    self_pane_id: Option<&str>,
+) -> Result<usize> {
+    let mut updated = 0;
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        if self_pane_id.is_some_and(|s| s == n.pane_id) {
+            continue;
+        }
+        if map.contains_key(&n.pane_id) {
+            continue;
+        }
+        if let Ok(Some(content)) = fetch_pane_content(&n.pane_id) {
+            // Cap on a char boundary: String::truncate would panic on CJK.
+            let content = if content.chars().count() > CONTENT_CAP {
+                content.chars().take(CONTENT_CAP).collect()
+            } else {
+                content
+            };
+            map.insert(n.pane_id.clone(), content);
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
 /// Focus a specific workspace via herdr CLI.
 pub fn focus_workspace(workspace_id: &str) -> Result<()> {
     run_focus(&["workspace", "focus", workspace_id])
@@ -788,6 +884,95 @@ mod tests {
         assert_eq!(ssh_entry.ssh_target.as_deref(), Some("lex@10.0.0.9:2200"));
         // Agent panes never get entries.
         assert!(!map.contains_key("p-agent"));
+    }
+
+    // ── pane content (content search) ──
+
+    #[test]
+    #[serial]
+    fn test_fetch_pane_content_strips_ansi_and_trims() {
+        mock_io::clear();
+        let raw = mock_io::make_output("\x1b[38;5;1mline one\x1b[0m\nline two\n");
+        mock_io::set_mock_outputs(vec![raw]);
+        let content = fetch_pane_content("p-1").unwrap().unwrap();
+        assert_eq!(content, "line one\nline two\n");
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_pane_content_empty_returns_none() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_output("   \n \x1b[0m  \n")]);
+        assert!(fetch_pane_content("p-1").unwrap().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_refresh_contents_skips_cached_agent_and_self() {
+        mock_io::clear();
+        let nodes = vec![
+            // p-shell fetched, p-agent skipped, self skipped, p-cached preserved
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-shell".into(),
+                pane_name: Some("shell".into()),
+                agent_id: None,
+                agent_status: crate::models::AgentStatus::None,
+                last_accessed_at: 0,
+            },
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-agent".into(),
+                pane_name: Some("agent".into()),
+                agent_id: Some("claude".into()),
+                agent_status: crate::models::AgentStatus::Working,
+                last_accessed_at: 0,
+            },
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "self".into(),
+                pane_name: Some("navigator".into()),
+                agent_id: None,
+                agent_status: crate::models::AgentStatus::None,
+                last_accessed_at: 0,
+            },
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-cached".into(),
+                pane_name: Some("cached".into()),
+                agent_id: None,
+                agent_status: crate::models::AgentStatus::None,
+                last_accessed_at: 0,
+            },
+        ];
+        // Exactly one fetch: for p-shell. cached/agent/self never fetch.
+        mock_io::set_mock_outputs(vec![mock_io::make_output("buffered text\n")]);
+
+        let mut map = std::collections::HashMap::new();
+        map.insert("p-cached".to_string(), "old cached content".to_string());
+        let updated = refresh_contents(&nodes, &mut map, Some("self")).unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(map.get("p-shell").map(String::as_str), Some("buffered text\n"));
+        assert_eq!(map.get("p-cached").map(String::as_str), Some("old cached content"));
+        assert!(!map.contains_key("p-agent"));
+        assert!(!map.contains_key("self"));
+
+        // A second pass performs zero fetches (all cached now).
+        mock_io::clear();
+        let updated = refresh_contents(&nodes, &mut map, Some("self")).unwrap();
+        assert_eq!(updated, 0);
     }
 
     // ── RPC method mapping ──

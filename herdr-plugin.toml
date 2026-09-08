@@ -48,7 +48,7 @@ command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "
 [[actions]]
 id = "focus-others"
 title = "Quick Focus: Others"
-description = "Open navigator focused on Others tab (cmd / ssh / cwd state search)"
+description = "Open navigator focused on Others tab (cmd/ssh/cwd + `.` content search)"
 contexts = ["global", "workspace"]
 command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "others"]
 
