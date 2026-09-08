@@ -82,6 +82,7 @@ pub fn tab_label(tab: &CategoryTab, narrow: bool) -> &'static str {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Panes => "Panes",
             CategoryTab::Agents => "Agents",
+            CategoryTab::Others => "Oth",
         }
     } else {
         tab.label()

@@ -9,7 +9,7 @@ use nucleo_matcher::{Config, Matcher};
 // AgentStatus is only used in #[cfg(test)] code (make_node helper and test data).
 // The import is kept here so `use super::*` in tests can access it.
 #[allow(unused_imports)]
-use crate::models::{AgentStatus, CategoryTab, DisplayItem, NavigationNode};
+use crate::models::{AgentStatus, CategoryTab, DisplayItem, NavigationNode, PaneOthers};
 
 thread_local! {
     static FUZZY_MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT));
@@ -37,6 +37,8 @@ pub struct BuildOptions<'a> {
     pub active_pane_id: Option<&'a str>,
     pub active_tab_id: Option<&'a str>,
     pub self_pane_id: Option<&'a str>,
+    /// Pane runtime state for the Others tab (cmd/ssh/cwd).
+    pub others: &'a HashMap<String, PaneOthers>,
 }
 
 /// Compute a lightweight cache key for the display list.
@@ -91,6 +93,9 @@ pub fn build_display_list(
         }
         CategoryTab::Panes => {
             build_pane_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id)
+        }
+        CategoryTab::Others => {
+            build_other_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id, opts.others)
         }
     }
 }
@@ -270,6 +275,64 @@ fn build_pane_items(
     items
 }
 
+/// Build the "Others" display list: one record per (pane × source).
+///
+/// Excludes agent panes (their identity/buffer is the Agent tab's job) and
+/// emits one `DisplayItem::Other` per available source: `ssh` target, `cmd`
+/// foreground command (shells suppressed), and `cwd`. Records inherit the
+/// pane's MRU timestamp and are ordered by source priority within a pane.
+fn build_other_items(
+    nodes: &[&NavigationNode],
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+    others: &HashMap<String, PaneOthers>,
+) -> Vec<DisplayItem> {
+    let mut items: Vec<DisplayItem> = Vec::new();
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        if !exclude_pane(n, exclude_pane_id, self_pane_id) {
+            continue;
+        }
+        let Some(o) = others.get(&n.pane_id) else {
+            continue;
+        };
+        let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
+        let pane_name = n
+            .pane_name
+            .clone()
+            .unwrap_or_else(|| n.pane_id.clone());
+
+        let mut push = |source: crate::models::OtherSource, detail: &str| {
+            items.push(DisplayItem::Other {
+                pane_id: n.pane_id.clone(),
+                pane_name: pane_name.clone(),
+                tab: n.tab_name.clone(),
+                workspace: n.workspace_name.clone(),
+                source,
+                detail: detail.to_string(),
+                last_accessed_at: ts,
+            });
+        };
+
+        if let Some(ssh) = &o.ssh_target {
+            push(crate::models::OtherSource::Ssh, ssh);
+        }
+        if let Some(cmd) = &o.command
+                && !crate::others::command_is_shell(cmd)
+            {
+                push(crate::models::OtherSource::Cmd, cmd);
+            }
+        if let Some(cwd) = &o.cwd {
+            push(crate::models::OtherSource::Cwd, cwd);
+        }
+    }
+    mru_sort(&mut items);
+    items
+}
+
 /// Fuzzy-search display items by their search_text.
 pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayItem> {
     if query.is_empty() {
@@ -281,19 +344,31 @@ pub fn search_display_items(items: &[DisplayItem], query: &str) -> Vec<DisplayIt
     FUZZY_MATCHER.with(|m| {
         let mut matcher = m.borrow_mut();
         let mut buf = Vec::new();
-        let mut scored: Vec<(usize, u32)> = items
+        // (primary, secondary) sort keys. For `Other` rows the primary key is
+        // the score against the detail column alone: a match in the pane/tab/
+        // workspace columns must never outrank a detail column match.
+        let mut scored: Vec<((u32, u32), usize)> = items
             .iter()
             .enumerate()
             .filter_map(|(i, item)| {
                 let text = item.search_text();
                 buf.clear();
                 let utf32 = nucleo_matcher::Utf32Str::new(&text, &mut buf);
-                pattern.score(utf32, &mut matcher).map(|score| (i, score))
+                let full = pattern.score(utf32, &mut matcher)?;
+                let (pri, sec) = match item {
+                    DisplayItem::Other { detail, .. } => {
+                        let mut detail_buf = Vec::new();
+                        let detail32 = nucleo_matcher::Utf32Str::new(detail, &mut detail_buf);
+                        (pattern.score(detail32, &mut matcher).unwrap_or(0), full)
+                    }
+                    _ => (full, 0),
+                };
+                Some(((pri, sec), i))
             })
             .collect();
 
-        scored.sort_by_key(|a| Reverse(a.1));
-        scored.into_iter().map(|(i, _)| items[i].clone()).collect()
+        scored.sort_by_key(|(k, _)| Reverse(*k));
+        scored.into_iter().map(|(_, i)| items[i].clone()).collect()
     })
 }
 
@@ -337,6 +412,9 @@ impl DisplayItem {
                 last_accessed_at, ..
             }
             | DisplayItem::Pane {
+                last_accessed_at, ..
+            }
+            | DisplayItem::Other {
                 last_accessed_at, ..
             } => *last_accessed_at,
         }
@@ -425,6 +503,7 @@ mod tests {
     fn test_exclude_active_workspace() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -433,6 +512,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         assert!(
@@ -460,6 +540,7 @@ mod tests {
     fn test_build_workspace_items() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -468,6 +549,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         // Auth-Service (ws-1) should be first, containing 2 panes and 1 agent
@@ -505,6 +587,7 @@ mod tests {
     fn test_build_agent_items() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -513,6 +596,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
         assert_eq!(items.len(), 3, "3 agent nodes");
@@ -530,6 +614,7 @@ mod tests {
     fn test_build_pane_items() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -538,6 +623,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Panes);
         assert_eq!(items.len(), 5, "5 pane items");
@@ -548,6 +634,7 @@ mod tests {
     fn test_exclude_active_tab_keeps_same_workspace_tabs() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -556,6 +643,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: Some("tab-pane-1"),
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Tabs);
         let remaining_names: Vec<&str> = items
@@ -583,6 +671,7 @@ mod tests {
     fn test_exclude_active_pane_keeps_other_panes() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -591,6 +680,7 @@ mod tests {
             active_pane_id: Some("pane-1"),
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Panes);
         assert_eq!(items.len(), 4, "4 panes after excluding pane-1");
@@ -607,6 +697,7 @@ mod tests {
     fn test_exclude_active_pane_from_agents() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -615,6 +706,7 @@ mod tests {
             active_pane_id: Some("pane-1"),
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
         assert_eq!(items.len(), 2, "2 agents after excluding pane-1's agent");
@@ -635,6 +727,7 @@ mod tests {
     fn test_build_display_list_deterministic() {
         let nodes = sample_nodes();
         let empty = HashMap::new();
+        let empty_others = HashMap::new();
         let opts = BuildOptions {
             pane_ts: &empty,
             tab_ts: &empty,
@@ -643,6 +736,7 @@ mod tests {
             active_pane_id: None,
             active_tab_id: None,
             self_pane_id: None,
+            others: &empty_others,
         };
         let a = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         let b = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
@@ -650,5 +744,168 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             assert_eq!(x.sort_key(), y.sort_key(), "Items should be in same order");
         }
+    }
+
+    // ── Others tab ──
+
+    fn others_map() -> HashMap<String, PaneOthers> {
+        let mut map: HashMap<String, PaneOthers> = HashMap::new();
+        map.insert(
+            "pane-4".into(),
+            PaneOthers {
+                cwd: Some("/repo/auth/config".into()),
+                command: Some("ssh -p 2222 deploy@10.1.2.3".into()),
+                ssh_target: Some("deploy@10.1.2.3:2222".into()),
+            },
+        );
+        map.insert(
+            "pane-5".into(),
+            PaneOthers {
+                cwd: Some("/infra/prod".into()),
+                command: Some("-zsh".into()),
+                ssh_target: None,
+            },
+        );
+        map
+    }
+
+    /// Others emits one record per (pane × source); agent panes and login
+    /// shells are excluded; records group by pane in priority order.
+    #[test]
+    fn test_build_other_items_records_and_excludes() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let others = others_map();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+        let items = build_display_list(&nodes, &opts, &CategoryTab::Others);
+        // pane-4: ssh + cmd + cwd = 3 records; pane-5: cwd only (shell filtered) = 1.
+        assert_eq!(items.len(), 4);
+        for item in &items {
+            if let DisplayItem::Other { pane_id, .. } = item {
+                assert!(
+                    !matches!(pane_id.as_str(), "pane-1" | "pane-2" | "pane-3"),
+                    "agent panes must be excluded from Others"
+                );
+            } else {
+                panic!("Expected Other item");
+            }
+        }
+        // Records of pane-4 are grouped and ordered ssh < cmd < cwd.
+        let pane4_sources: Vec<crate::models::OtherSource> = items
+            .iter()
+            .filter_map(|it| match it {
+                DisplayItem::Other { pane_id, source, .. } if pane_id == "pane-4" => Some(*source),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pane4_sources,
+            vec![
+                crate::models::OtherSource::Ssh,
+                crate::models::OtherSource::Cmd,
+                crate::models::OtherSource::Cwd,
+            ]
+        );
+    }
+
+    /// Others ranking must favor the detail column: a workspace/tab/pane-only
+    /// fuzzy hit must not outrank a row whose detail fully matches the query.
+    #[test]
+    fn test_other_search_prioritizes_detail_column() {
+        let items: Vec<DisplayItem> = vec![
+            DisplayItem::Other {
+                pane_id: "p-detail".into(),
+                pane_name: "p-detail".into(),
+                tab: "main".into(),
+                workspace: "main".into(),
+                source: crate::models::OtherSource::Ssh,
+                detail: "ssh -p 2222 deploy@app-server-01".into(),
+                last_accessed_at: 2000,
+            },
+            DisplayItem::Other {
+                pane_id: "p-workspace".into(),
+                pane_name: "p-workspace".into(),
+                tab: "main".into(),
+                workspace: "app-server-01-prod".into(),
+                source: crate::models::OtherSource::Cmd,
+                detail: "tail -f /var/log/app.log".into(),
+                last_accessed_at: 1000,
+            },
+        ];
+        // Sanity: the workspace-column row scores higher on the full search
+        // text (nucleo sprinkles bonus characters across fields), so the
+        // regression is precisely that detail still wins.
+        let pattern = Pattern::parse("app-server-01", CaseMatching::Ignore, Normalization::Smart);
+        FUZZY_MATCHER.with(|m| {
+            let mut matcher = m.borrow_mut();
+            let mut buf = Vec::new();
+            let full = pattern
+                .score(
+                    nucleo_matcher::Utf32Str::new(&items[1].search_text(), &mut buf),
+                    &mut matcher,
+                )
+                .unwrap();
+            let mut dbuf = Vec::new();
+            let detail_text = match &items[0] {
+                DisplayItem::Other { detail, .. } => detail.as_str(),
+                _ => unreachable!(),
+            };
+            let detail = pattern
+                .score(
+                    nucleo_matcher::Utf32Str::new(detail_text, &mut dbuf),
+                    &mut matcher,
+                )
+                .unwrap();
+            assert!(full > detail, "precondition: workspace full-text hit outranks detail");
+        });
+
+        let ranked = search_display_items(&items, "app-server-01");
+        assert_eq!(ranked.len(), 2);
+        let first = match &ranked[0] {
+            DisplayItem::Other { detail, .. } => detail.as_str(),
+            _ => unreachable!(),
+        };
+        assert!(
+            first.contains("deploy@"),
+            "detail column match must rank first, got: {first}"
+        );
+    }
+
+    /// Others search text includes the source label so `ssh` filters to ssh rows.
+    #[test]
+    fn test_other_search_text_includes_source_label() {
+        let others = others_map();
+        let node = make_node(
+            "pane-4",
+            "ws-1",
+            "Auth-Service",
+            "Config",
+            AgentStatus::Idle,
+            2000,
+            None,
+        );
+        let records = build_other_items(
+            &[&node],
+            &HashMap::new(),
+            None,
+            None,
+            &others,
+        );
+        let ssh_record = records
+            .iter()
+            .find(|r| matches!(r, DisplayItem::Other { source: crate::models::OtherSource::Ssh, .. }))
+            .expect("ssh record exists");
+        let text = ssh_record.search_text();
+        assert!(text.starts_with("ssh "), "source label first: {text}");
+        assert!(text.contains("deploy@10.1.2.3:2222"));
     }
 }

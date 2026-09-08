@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -39,6 +40,55 @@ pub struct NavigationNode {
     pub last_accessed_at: u64,
 }
 
+/// The source kind of an "Others" row: which runtime state dimension a pane
+/// record represents. Not identity — `cmd`/`ssh`/`cwd` describe what the pane
+/// is doing/where it is. `File` is reserved for the deferred title/statusline
+/// parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtherSource {
+    /// Among the running foreground command (detail = the command line).
+    Cmd,
+    /// Active ssh/mosh login target (detail = `user@host` or `host:port`).
+    Ssh,
+    /// A file the pane is currently editing (deferred — detail = file path).
+    #[allow(dead_code)]
+    File,
+    /// The pane's current directory.
+    Cwd,
+}
+
+impl OtherSource {
+    /// Short label shown in the Type column / searchable text.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OtherSource::Cmd => "cmd",
+            OtherSource::Ssh => "ssh",
+            OtherSource::File => "file",
+            OtherSource::Cwd => "cwd",
+        }
+    }
+
+    /// Ordering priority within a pane's records (lower sorts first).
+    pub fn priority(&self) -> u8 {
+        match self {
+            OtherSource::Ssh => 0,
+            OtherSource::Cmd => 1,
+            OtherSource::File => 2,
+            OtherSource::Cwd => 3,
+        }
+    }
+}
+
+/// Lazily-fetched runtime state for a pane, used by the Others tab.
+/// Unlike `NavigationNode` (refreshed every 2s), this is refetched only while
+/// the Others tab is active, and only once per pane per refresh window.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneOthers {
+    pub cwd: Option<String>,
+    pub command: Option<String>,
+    pub ssh_target: Option<String>,
+}
+
 /// The category tabs at the top of the navigator UI.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CategoryTab {
@@ -46,11 +96,13 @@ pub enum CategoryTab {
     Tabs,
     Agents,
     Panes,
+    /// Pane runtime state search (cmd / ssh / cwd), excluding agent panes.
+    Others,
 }
 
 impl CategoryTab {
     /// Number of variants, for cycling.
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
     /// Return all variants in order.
     pub fn all() -> [CategoryTab; Self::COUNT] {
@@ -59,6 +111,7 @@ impl CategoryTab {
             CategoryTab::Tabs,
             CategoryTab::Panes,
             CategoryTab::Agents,
+            CategoryTab::Others,
         ]
     }
 
@@ -68,17 +121,19 @@ impl CategoryTab {
             CategoryTab::Workspaces => CategoryTab::Tabs,
             CategoryTab::Tabs => CategoryTab::Panes,
             CategoryTab::Panes => CategoryTab::Agents,
-            CategoryTab::Agents => CategoryTab::Workspaces,
+            CategoryTab::Agents => CategoryTab::Others,
+            CategoryTab::Others => CategoryTab::Workspaces,
         }
     }
 
     /// Move to the previous tab (wrapping).
     pub fn previous(&self) -> Self {
         match self {
-            CategoryTab::Workspaces => CategoryTab::Agents,
+            CategoryTab::Workspaces => CategoryTab::Others,
             CategoryTab::Tabs => CategoryTab::Workspaces,
             CategoryTab::Panes => CategoryTab::Tabs,
             CategoryTab::Agents => CategoryTab::Panes,
+            CategoryTab::Others => CategoryTab::Agents,
         }
     }
 
@@ -89,6 +144,7 @@ impl CategoryTab {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Agents => "Agents",
             CategoryTab::Panes => "Panes",
+            CategoryTab::Others => "Others",
         }
     }
 }
@@ -129,6 +185,16 @@ pub enum DisplayItem {
         status: AgentStatus,
         last_accessed_at: u64,
     },
+    Other {
+        pane_id: String,
+        pane_name: String,
+        tab: String,
+        workspace: String,
+        source: OtherSource,
+        /// The matched/runtime value: command line, ssh target, or cwd path.
+        detail: String,
+        last_accessed_at: u64,
+    },
 }
 
 impl DisplayItem {
@@ -141,6 +207,9 @@ impl DisplayItem {
             } => format!("{}:{}", workspace, name),
             DisplayItem::Agent { agent_id, .. } => agent_id.clone(),
             DisplayItem::Pane { pane_name, .. } => pane_name.clone(),
+            DisplayItem::Other {
+                pane_name, source, ..
+            } => format!("{}{}", source.priority(), pane_name),
         }
     }
 
@@ -170,6 +239,23 @@ impl DisplayItem {
                     tab,
                     workspace,
                     agent_id.as_deref().unwrap_or("")
+                )
+            }
+            DisplayItem::Other {
+                pane_name,
+                tab,
+                workspace,
+                source,
+                detail,
+                ..
+            } => {
+                format!(
+                    "{} {} {} {} {}",
+                    source.label(),
+                    detail,
+                    pane_name,
+                    tab,
+                    workspace
                 )
             }
         }
@@ -376,6 +462,8 @@ pub struct AppState {
     pub cached_displayed: Rc<Vec<DisplayItem>>,
     /// Total items before search filtering; shown in the status bar count.
     pub cached_total: usize,
+    /// Lazily-fetched pane runtime state for the Others tab (cmd/ssh/cwd).
+    pub others: HashMap<String, PaneOthers>,
 }
 
 fn state_file_path() -> PathBuf {
@@ -422,6 +510,7 @@ impl std::str::FromStr for CategoryTab {
             "tabs" => Ok(CategoryTab::Tabs),
             "agents" => Ok(CategoryTab::Agents),
             "panes" => Ok(CategoryTab::Panes),
+            "others" => Ok(CategoryTab::Others),
             _ => Err(format!("Unknown category tab: {s}")),
         }
     }
@@ -458,6 +547,14 @@ mod category_tab_tests {
     }
 
     #[test]
+    fn test_category_tab_from_str_others() {
+        assert_eq!(
+            "others".parse::<CategoryTab>().unwrap(),
+            CategoryTab::Others
+        );
+    }
+
+    #[test]
     fn test_category_tab_from_str_invalid() {
         assert!("invalid".parse::<CategoryTab>().is_err());
     }
@@ -465,6 +562,26 @@ mod category_tab_tests {
     #[test]
     fn test_category_tab_from_str_case_sensitive() {
         assert!("Workspaces".parse::<CategoryTab>().is_err());
+    }
+}
+
+#[cfg(test)]
+mod other_source_tests {
+    use super::*;
+
+    #[test]
+    fn test_other_source_labels() {
+        assert_eq!(OtherSource::Ssh.label(), "ssh");
+        assert_eq!(OtherSource::Cmd.label(), "cmd");
+        assert_eq!(OtherSource::Cwd.label(), "cwd");
+        assert_eq!(OtherSource::File.label(), "file");
+    }
+
+    #[test]
+    fn test_other_source_priority_order() {
+        assert!(OtherSource::Ssh.priority() < OtherSource::Cmd.priority());
+        assert!(OtherSource::Cmd.priority() < OtherSource::File.priority());
+        assert!(OtherSource::File.priority() < OtherSource::Cwd.priority());
     }
 }
 

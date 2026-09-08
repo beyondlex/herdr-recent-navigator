@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::models::{AgentStatus, NavigationNode};
+use crate::models::{AgentStatus, NavigationNode, PaneOthers};
 
 /// Information about the currently focused pane, captured during
 /// `fetch_all_nodes()` to avoid a redundant subprocess call.
@@ -57,6 +57,35 @@ struct PaneInfo {
     agent_status: Option<AgentStatusWire>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    foreground_cwd: Option<String>,
+}
+
+/// Wrapper around `herdr pane process-info` result field.
+#[derive(Debug, Deserialize)]
+struct ProcessInfoResult {
+    #[serde(default)]
+    process_info: Option<ProcessInfo>,
+}
+
+/// One pane's process tree info from `herdr pane process-info`.
+#[derive(Debug, Deserialize)]
+struct ProcessInfo {
+    #[serde(default)]
+    foreground_processes: Vec<ForegroundProcess>,
+}
+
+/// A single foreground process entry within a pane.
+#[derive(Debug, Deserialize)]
+struct ForegroundProcess {
+    #[serde(default)]
+    argv: Option<Vec<String>>,
+    #[serde(default)]
+    cmdline: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,6 +199,9 @@ fn args_to_method(args: &[&str]) -> Option<(&'static str, serde_json::Value)> {
         ["workspace", "focus", id] => Some(("workspace.focus", json!({"workspace_id": id}))),
         ["tab", "focus", id] => Some(("tab.focus", json!({"tab_id": id}))),
         ["pane", "zoom", id, "--off"] => Some(("pane.zoom", json!({"pane_id": id, "mode": "off"}))),
+        ["pane", "process-info", "--pane", id] => {
+            Some(("pane.process_info", json!({"pane_id": id})))
+        }
         ["tab", "list", "--workspace", id] => Some(("tab.list", json!({"workspace_id": id}))),
         _ => None,
     }
@@ -420,6 +452,89 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
     Ok((nodes, active_pane_info))
 }
 
+/// The recognized foreground command line of a pane.
+#[derive(Debug, Clone)]
+pub struct PaneProcess {
+    pub command: String,
+}
+
+/// Fetch the foreground command line of a pane via `herdr pane process-info`.
+/// Returns `None` when the pane has no foreground process or an empty command.
+pub fn fetch_pane_process(pane_id: &str) -> Result<Option<PaneProcess>> {
+    let result: ProcessInfoResult = herdr_cli(&["pane", "process-info", "--pane", pane_id])?;
+    let command = result
+        .process_info
+        .and_then(|pi| pi.foreground_processes.into_iter().next())
+        .and_then(|pr| {
+            pr.cmdline
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| pr.argv.filter(|a| !a.is_empty()).map(|a| a.join(" ")))
+                .or_else(|| pr.name.filter(|s| !s.trim().is_empty()))
+        })
+        .unwrap_or_default();
+    if command.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(PaneProcess { command }))
+    }
+}
+
+/// Fetch the current working directory of every pane in one `pane list` call.
+/// Prefers the shell's `cwd`, falling back to `foreground_cwd`.
+fn fetch_cwd_map() -> Result<HashMap<String, String>> {
+    let result: PaneListResult = herdr_cli(&["pane", "list"])?;
+    Ok(result
+        .panes
+        .into_iter()
+        .filter_map(|p| {
+            let cwd = p.cwd.or(p.foreground_cwd)?;
+            Some((p.pane_id, cwd))
+        })
+        .collect())
+}
+
+/// Refresh the lazy "Others" state (cwd / command / ssh target) for non-agent
+/// panes. `map` is mutated in place and may be pre-seeded (e.g. from a prior
+/// refresh) — existing command/ssh values are preserved to avoid re-polling.
+///
+/// Cost: one bulk `pane list` + one `pane process-info` per pane without a
+/// cached command. Callers run this in a background thread, only while the
+/// Others tab is active.
+pub fn refresh_others(
+    nodes: &[NavigationNode],
+    map: &mut HashMap<String, PaneOthers>,
+) -> Result<usize> {
+    // Refresh cwd for all panes in one bulk call.
+    let cwd_map = fetch_cwd_map()?;
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        let entry = map.entry(n.pane_id.clone()).or_default();
+        if let Some(cwd) = cwd_map.get(&n.pane_id) {
+            entry.cwd = Some(cwd.clone());
+        }
+    }
+
+    // Lazily fill command/ssh target (once per pane) from process-info.
+    let mut updated = 0;
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        let entry = map.entry(n.pane_id.clone()).or_default();
+        if entry.command.is_some() {
+            continue;
+        }
+        if let Ok(Some(proc)) = fetch_pane_process(&n.pane_id) {
+            entry.command = Some(proc.command.clone());
+            entry.ssh_target = crate::others::parse_ssh_target(&proc.command);
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
 /// Focus a specific workspace via herdr CLI.
 pub fn focus_workspace(workspace_id: &str) -> Result<()> {
     run_focus(&["workspace", "focus", workspace_id])
@@ -558,5 +673,131 @@ mod tests {
         mock_io::set_mock_outputs(vec![mock_io::make_failing_output()]);
         let result = focus_workspace("ws-1");
         assert!(result.is_err());
+    }
+
+    // ── process-info / others ──
+
+    #[test]
+    #[serial]
+    fn test_fetch_pane_process_parses_cmdline() {
+        mock_io::clear();
+        let pi = mock_io::make_output(
+            r#"{"result":{"process_info":{"foreground_processes":[{"argv":["psql","-U","poste"],"cmdline":"psql -U poste -h 127.0.0.1","name":"psql","pid":1}],"pane_id":"p-1","shell_pid":2}}}"#,
+        );
+        mock_io::set_mock_outputs(vec![pi]);
+        let proc = fetch_pane_process("p-1").unwrap().unwrap();
+        assert_eq!(proc.command, "psql -U poste -h 127.0.0.1");
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_pane_process_empty_returns_none() {
+        mock_io::clear();
+        let pi = mock_io::make_output(
+            r#"{"result":{"process_info":{"foreground_processes":[],"pane_id":"p-1"}}}"#,
+        );
+        mock_io::set_mock_outputs(vec![pi]);
+        assert!(fetch_pane_process("p-1").unwrap().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_cwd_map_prefers_shell_cwd() {
+        mock_io::clear();
+        let panes = mock_io::make_output(
+            r#"{"result":{"panes":[
+                {"pane_id":"p-1","workspace_id":"ws-1","tab_id":"t-1","focused":false,"cwd":"/a","foreground_cwd":"/a"},
+                {"pane_id":"p-2","workspace_id":"ws-1","tab_id":"t-1","focused":false,"cwd":"/b","foreground_cwd":"/b"},
+                {"pane_id":"p-3","workspace_id":"ws-1","tab_id":"t-1","focused":false,"foreground_cwd":"/only-fg"}
+            ]}}"#,
+        );
+        mock_io::set_mock_outputs(vec![panes]);
+        let map = fetch_cwd_map().unwrap();
+        assert_eq!(map.get("p-1").map(String::as_str), Some("/a"));
+        assert_eq!(map.get("p-2").map(String::as_str), Some("/b"));
+        assert_eq!(map.get("p-3").map(String::as_str), Some("/only-fg"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_refresh_others_fills_command_ssh_cwd() {
+        mock_io::clear();
+        // 1 pane list + process-info per non-agent pane
+        let panes = mock_io::make_output(
+            r#"{"result":{"panes":[
+                {"pane_id":"p-shell","workspace_id":"ws-1","tab_id":"t-1","focused":false,"cwd":"/home/lex","foreground_cwd":"/home/lex"},
+                {"pane_id":"p-ssh","workspace_id":"ws-1","tab_id":"t-1","focused":false,"cwd":"/work","foreground_cwd":"/work"},
+                {"pane_id":"p-agent","workspace_id":"ws-1","tab_id":"t-1","focused":false,"agent":"claude","cwd":"/agentws","foreground_cwd":"/agentws"}
+            ]}}"#,
+        );
+        let shell = mock_io::make_output(
+            r#"{"result":{"process_info":{"foreground_processes":[{"cmdline":"-zsh","name":"zsh"}],"pane_id":"p-shell"}}}"#,
+        );
+        let ssh = mock_io::make_output(
+            r#"{"result":{"process_info":{"foreground_processes":[{"cmdline":"ssh -p 2200 lex@10.0.0.9","name":"ssh"}],"pane_id":"p-ssh"}}}"#,
+        );
+        mock_io::set_mock_outputs(vec![panes, shell, ssh]);
+
+        let nodes = vec![
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-shell".into(),
+                pane_name: Some("shell".into()),
+                agent_id: None,
+                agent_status: crate::models::AgentStatus::None,
+                last_accessed_at: 0,
+            },
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-ssh".into(),
+                pane_name: Some("ssh".into()),
+                agent_id: None,
+                agent_status: crate::models::AgentStatus::None,
+                last_accessed_at: 0,
+            },
+            crate::models::NavigationNode {
+                workspace_id: "ws-1".into(),
+                workspace_name: "w".into(),
+                tab_id: "t-1".into(),
+                tab_name: "t".into(),
+                pane_id: "p-agent".into(),
+                pane_name: Some("agent".into()),
+                agent_id: Some("claude".into()),
+                agent_status: crate::models::AgentStatus::Working,
+                last_accessed_at: 0,
+            },
+        ];
+
+        let mut map = std::collections::HashMap::new();
+        let updated = refresh_others(&nodes, &mut map).unwrap();
+        // Agent pane is skipped; shell and ssh both got a command.
+        assert_eq!(updated, 2);
+        let shell_entry = map.get("p-shell").unwrap();
+        assert_eq!(shell_entry.cwd.as_deref(), Some("/home/lex"));
+        assert_eq!(shell_entry.command.as_deref(), Some("-zsh"));
+        assert_eq!(shell_entry.ssh_target, None);
+        let ssh_entry = map.get("p-ssh").unwrap();
+        assert_eq!(ssh_entry.cwd.as_deref(), Some("/work"));
+        assert_eq!(ssh_entry.command.as_deref(), Some("ssh -p 2200 lex@10.0.0.9"));
+        assert_eq!(ssh_entry.ssh_target.as_deref(), Some("lex@10.0.0.9:2200"));
+        // Agent panes never get entries.
+        assert!(!map.contains_key("p-agent"));
+    }
+
+    // ── RPC method mapping ──
+
+    #[test]
+    fn test_args_to_method_process_info() {
+        let mapped = args_to_method(&["pane", "process-info", "--pane", "w1:p2"]);
+        assert!(mapped.is_some());
+        let (method, params) = mapped.unwrap();
+        assert_eq!(method, "pane.process_info");
+        assert_eq!(params, serde_json::json!({"pane_id": "w1:p2"}));
     }
 }

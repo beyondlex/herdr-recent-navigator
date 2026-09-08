@@ -46,6 +46,13 @@ contexts = ["global", "workspace"]
 command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "panes"]
 
 [[actions]]
+id = "focus-others"
+title = "Quick Focus: Others"
+description = "Open navigator focused on Others tab (cmd / ssh / cwd state search)"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "others"]
+
+[[actions]]
 id = "focus-previous-tab"
 title = "Quick Focus: Previous Tab"
 description = "Jump to the most recently focused tab without opening the navigator"

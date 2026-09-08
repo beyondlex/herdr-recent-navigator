@@ -1,5 +1,5 @@
 use crate::format::*;
-use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings};
+use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -317,6 +317,9 @@ fn render_column_header(
         CategoryTab::Tabs => (&["Tab", "Workspace", "Agent"], 1, &col_layout::TAB),
         CategoryTab::Agents => (&["Agent", "Tab", "Workspace"], 2, &col_layout::AGENT),
         CategoryTab::Workspaces => (&["Workspace", "Agent"], 1, &col_layout::WORKSPACE),
+        CategoryTab::Others => {
+            (&["Type", "Detail", "Pane", "Tab", "Workspace"], 1, &col_layout::OTHER)
+        }
     };
     let cols = Layout::horizontal(constraints)
         .flex(Flex::Start)
@@ -402,15 +405,23 @@ fn render_list(
                     workspace,
                     ..
                 } => row_agent(i, agent_id, status, tab, workspace, &row_ctx),
-                DisplayItem::Pane {
-                    pane_name,
-                    workspace,
-                    tab,
-                    agent_id,
-                    status,
-                    ..
-                } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
-            }
+DisplayItem::Pane {
+                pane_name,
+                workspace,
+                tab,
+                agent_id,
+                status,
+                ..
+            } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
+            DisplayItem::Other {
+                pane_name,
+                source,
+                detail,
+                tab,
+                workspace,
+                ..
+            } => row_other(i, source, detail, pane_name, tab, workspace, &row_ctx),
+        }
         })
         .collect();
     let visible_rows = area.height as usize;
@@ -560,6 +571,14 @@ mod col_layout {
         Constraint::Percentage(36),
     ];
     pub const WORKSPACE: [Constraint; 3] = [IDX, Constraint::Fill(1), DOTS];
+    pub const OTHER: [Constraint; 6] = [
+        IDX,
+        Constraint::Length(6),
+        Constraint::Percentage(30),
+        Constraint::Percentage(22),
+        Constraint::Percentage(18),
+        Constraint::Percentage(24),
+    ];
 }
 
 fn col_spans(text: &str, col: &Rect, query: &str, base: Style, hl: Style) -> Vec<Span<'static>> {
@@ -705,7 +724,53 @@ fn row_pane(
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
 
-// ── Mobile / responsive helpers & layout — now in crate::format ──
+/// Per-source color so the Type column is scannable at a glance.
+fn source_style(source: &OtherSource, p: &Palette) -> Style {
+    let c = match source {
+        OtherSource::Ssh => p.teal,
+        OtherSource::Cmd => p.yellow,
+        OtherSource::File => p.mauve,
+        OtherSource::Cwd => p.green,
+    };
+    Style::default()
+        .fg(c)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn row_other(
+    i: usize,
+    source: &OtherSource,
+    detail: &str,
+    pn: &str,
+    tab: &str,
+    ws: &str,
+    ctx: &RowCtx,
+) -> ListItem<'static> {
+    let cs = ctx_style(ctx.sel, ctx.p);
+    let hl = hl_style(ctx.sel, ctx.p);
+    let ns = name_style(ctx.sel, ctx.p);
+
+    let rw = ctx.rw as u16;
+    let cols = Layout::horizontal(col_layout::OTHER)
+        .flex(Flex::Start)
+        .split(Rect::new(0, 0, rw, 1));
+
+    let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
+
+    // Type column (fixed width, right-side type reads like a tag).
+    let type_col_w = cols[1].width as usize;
+    let type_text = source.label();
+    let tw = UnicodeWidthStr::width(type_text);
+    let pad = type_col_w.saturating_sub(tw);
+    sp.push(Span::styled(type_text.to_string(), source_style(source, ctx.p)));
+    sp.push(Span::raw(" ".repeat(pad)));
+
+    sp.extend(col_spans(detail, &cols[2], ctx.query, ns, hl));
+    sp.extend(col_spans(pn, &cols[3], ctx.query, cs, hl));
+    sp.extend(col_spans(tab, &cols[4], ctx.query, cs, hl));
+    sp.extend(col_spans(ws, &cols[5], ctx.query, cs, hl));
+    ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
+}
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
 // are imported via `use crate::format::*;` at the top of this file.
 

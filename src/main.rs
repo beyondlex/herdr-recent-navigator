@@ -5,6 +5,7 @@ mod format;
 mod ipc;
 mod models;
 mod mru;
+mod others;
 mod tracker;
 mod ui;
 
@@ -571,6 +572,13 @@ fn run_event_loop(
     let mut last_refresh = Instant::now();
     let (refresh_tx, refresh_rx) = mpsc::channel();
     let refresh_in_flight = Arc::new(AtomicBool::new(false));
+
+    // Lazy "Others" state refresh: cwd + foreground command/ssh, re-fetched
+    // only while the Others tab is active (callers pay the process-info cost).
+    let (others_tx, others_rx) = mpsc::channel();
+    let others_in_flight = Arc::new(AtomicBool::new(false));
+    let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
+
     loop {
         // ── Periodic data refresh (non-blocking, background thread) ──
         if connected
@@ -606,6 +614,29 @@ fn run_event_loop(
             state.cache_key = None; // nodes changed, invalidate cache
         }
 
+        // ── Lazy "Others" state refresh (cwd / command / ssh) ──
+        if connected
+            && state.current_category == CategoryTab::Others
+            && others_last_fetch.elapsed() >= Duration::from_secs(10)
+            && !others_in_flight.load(Ordering::Relaxed)
+        {
+            others_last_fetch = Instant::now();
+            others_in_flight.store(true, Ordering::Relaxed);
+            let nodes = state.nodes.clone();
+            let mut others = state.others.clone();
+            let tx = others_tx.clone();
+            let flag = others_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = crate::ipc::refresh_others(&nodes, &mut others);
+                let _ = tx.send(others);
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(fresh_others) = others_rx.try_recv() {
+            state.others = fresh_others;
+            state.cache_key = None; // others changed, invalidate cache
+        }
+
         // ── Build display list once, shared by render + event handler ──
         let opts = mru::BuildOptions {
             pane_ts,
@@ -615,6 +646,7 @@ fn run_event_loop(
             active_pane_id: ctx.pane_id.as_deref(),
             active_tab_id: ctx.tab_id.as_deref(),
             self_pane_id: ctx.self_pane_id.as_deref(),
+            others: &state.others,
         };
         // Use cache key to skip rebuild when input hasn't changed
         let cache_key = mru::build_cache_key(
@@ -693,9 +725,9 @@ fn get_selected_target_from_list(
     displayed.get(state.selected_index).map(|item| match item {
         models::DisplayItem::Workspace { id, .. } => FocusTarget::Workspace(id.clone()),
         models::DisplayItem::Tab { tab_id, .. } => FocusTarget::Tab(tab_id.clone()),
-        models::DisplayItem::Agent { pane_id, .. } | models::DisplayItem::Pane { pane_id, .. } => {
-            FocusTarget::Pane(pane_id.clone())
-        }
+        models::DisplayItem::Agent { pane_id, .. }
+        | models::DisplayItem::Pane { pane_id, .. }
+        | models::DisplayItem::Other { pane_id, .. } => FocusTarget::Pane(pane_id.clone()),
     })
 }
 

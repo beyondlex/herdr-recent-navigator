@@ -13,6 +13,7 @@ impl AppState {
             cache_key: None,
             cached_displayed: std::rc::Rc::new(Vec::new()),
             cached_total: 0,
+            others: std::collections::HashMap::new(),
         }
     }
 
@@ -129,6 +130,9 @@ mod tests {
         assert_eq!(state.current_category, CategoryTab::Agents);
 
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Others);
+
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
         assert_eq!(state.current_category, CategoryTab::Workspaces);
     }
 
@@ -138,10 +142,10 @@ mod tests {
         let mut state = make_state();
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Agents);
+        assert_eq!(state.current_category, CategoryTab::Others);
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Panes);
+        assert_eq!(state.current_category, CategoryTab::Agents);
     }
 
     /// Number keys should append to search query (not quick-select)
