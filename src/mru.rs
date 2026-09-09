@@ -367,6 +367,42 @@ fn file_context(path: String, line: Option<u32>, cwd: Option<&str>) -> String {
 /// (falling back to the pane label when the lazy state hasn't been fetched).
 /// A `file` row's Context is the edited path — `:line` when the command
 /// carries one — made absolute with the pane's cwd; everything else gets `-`.
+/// Classify a content-bearing pane into a `file` (editor buffer) vs `term`
+/// (plain terminal output) row, returning whether it is a file row and the
+/// edited `(path, line)` when it is.
+fn content_row_meta(
+    title: &str,
+    state: Option<&PaneOthers>,
+) -> (bool, Option<(String, Option<u32>)>) {
+    let command = state.and_then(|o| o.command.as_deref());
+    // The command line that makes this a file row: the foreground command,
+    // or the pane label (often the editor cmdline) when process state is
+    // not fetched yet.
+    let editor_cmd = match command {
+        Some(c) if crate::others::command_is_editor(c) => Some(c),
+        None if crate::others::command_is_editor(title) => Some(title),
+        _ => None,
+    };
+    let editing_file = !crate::others::is_shell_prompt_title(title) && editor_cmd.is_some();
+    let target = if editing_file {
+        editor_cmd.and_then(crate::others::parse_editor_target)
+    } else {
+        None
+    };
+    (editing_file, target)
+}
+
+/// First non-empty line of terminal buffer content, trimmed — the preview a
+/// `file `/`term ` row shows when there is no needle to excerpt around.
+fn first_content_line(content: &str) -> String {
+    content
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 pub fn build_content_items(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
@@ -392,23 +428,95 @@ pub fn build_content_items(
         };
         let title = n.pane_name.as_deref().unwrap_or_default();
         let state = others.get(&n.pane_id);
-        let command = state.and_then(|o| o.command.as_deref());
-        // The command line that makes this a file row: the foreground command,
-        // or the pane label (often the editor cmdline) when process state is
-        // not fetched yet.
-        let editor_cmd = match command {
-            Some(c) if crate::others::command_is_editor(c) => Some(c),
-            None if crate::others::command_is_editor(title) => Some(title),
-            _ => None,
-        };
-        let editing_file = !crate::others::is_shell_prompt_title(title) && editor_cmd.is_some();
+        let (editing_file, target) = content_row_meta(title, state);
         let context = if editing_file {
-            editor_cmd
-                .and_then(crate::others::parse_editor_target)
-                .map(|(path, line)| file_context(path, line, state.and_then(|o| o.cwd.as_deref())))
-                .unwrap_or_else(|| "-".to_string())
+            match &target {
+                Some((path, line)) => {
+                    file_context(path.clone(), *line, state.and_then(|o| o.cwd.as_deref()))
+                }
+                // Editor with no file argument: fall back to the pane's cwd.
+                None => state
+                    .and_then(|o| o.cwd.as_deref())
+                    .unwrap_or("-")
+                    .to_string(),
+            }
         } else {
-            "-".to_string()
+            // `term` rows are located by the pane's cwd.
+            state
+                .and_then(|o| o.cwd.as_deref())
+                .unwrap_or("-")
+                .to_string()
+        };
+        let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
+        items.push(DisplayItem::Other {
+            pane_id: n.pane_id.clone(),
+            pane_name: n.pane_name.clone().unwrap_or_else(|| n.pane_id.clone()),
+            tab: n.tab_name.clone(),
+            workspace: n.workspace_name.clone(),
+            source: if editing_file {
+                crate::models::OtherSource::File
+            } else {
+                crate::models::OtherSource::Terminal
+            },
+            detail,
+            context,
+            last_accessed_at: ts,
+        });
+    }
+    mru_sort(&mut items);
+    items
+}
+
+/// List every non-agent pane of the given content source kind (`File` = an
+/// editor buffer, `Terminal` = plain terminal output) that has cached buffer
+/// content, regardless of needle. Backs `file ` / `term ` with an empty
+/// needle: the Detail column previews the edited path (`file`) or the first
+/// content line (`term`), since there is no match to excerpt around.
+fn build_content_source_items(
+    nodes: &[NavigationNode],
+    contents: &HashMap<String, String>,
+    others: &HashMap<String, PaneOthers>,
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+    src: crate::models::OtherSource,
+) -> Vec<DisplayItem> {
+    let mut items = Vec::new();
+    for n in nodes {
+        if n.agent_id.is_some() {
+            continue;
+        }
+        if !exclude_pane(&n, exclude_pane_id, self_pane_id) {
+            continue;
+        }
+        let Some(content) = contents.get(&n.pane_id) else {
+            continue;
+        };
+        let title = n.pane_name.as_deref().unwrap_or_default();
+        let state = others.get(&n.pane_id);
+        let (editing_file, target) = content_row_meta(title, state);
+        let matches_src = if src == crate::models::OtherSource::File {
+            editing_file
+        } else {
+            !editing_file
+        };
+        if !matches_src {
+            continue;
+        }
+        let cwd = state.and_then(|o| o.cwd.as_deref());
+        let detail = match &target {
+            Some((path, _)) => file_context(path.clone(), None, cwd),
+            None => first_content_line(content),
+        };
+        let context = if editing_file {
+            match &target {
+                Some((path, line)) => file_context(path.clone(), *line, cwd),
+                // Editor with no file argument: fall back to the pane's cwd.
+                None => cwd.unwrap_or("-").to_string(),
+            }
+        } else {
+            // `term` rows are located by the pane's cwd.
+            cwd.unwrap_or("-").to_string()
         };
         let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
         items.push(DisplayItem::Other {
@@ -437,9 +545,11 @@ pub fn build_content_items(
 /// `term ` = that source only).
 ///
 /// Returns the query to fuzzy-rank and highlight with, plus the unranked
-/// rows. With an empty needle, filtered state rows still list (so `ssh `
-/// alone shows every ssh pane); filtered content rows do not (an excerpt
-/// needs a needle).
+/// rows. With an empty needle, filtered rows still list: state rows show
+/// every record of that source (so `ssh ` alone shows every ssh pane), and
+/// `file `/`term ` show every buffer pane of that kind with a preview. The
+/// bare `.` content filter needs a needle (an excerpt needs a match), so it
+/// stays empty.
 pub fn build_others_base(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
@@ -474,6 +584,21 @@ pub fn build_others_base(
 
     let items = match filter {
         Some(crate::models::OthersFilter::Source(src)) => match src {
+            // `file ` / `term ` with no needle: list the panes of that kind
+            // (an excerpt needs a match; fall back to a path/first-line preview).
+            crate::models::OtherSource::File | crate::models::OtherSource::Terminal
+                if needle.is_empty() =>
+            {
+                build_content_source_items(
+                    nodes,
+                    contents,
+                    others,
+                    opts.pane_ts,
+                    opts.active_pane_id,
+                    opts.self_pane_id,
+                    src,
+                )
+            }
             crate::models::OtherSource::File | crate::models::OtherSource::Terminal => {
                 by_source(content_rows(needle), src)
             }
@@ -1290,9 +1415,41 @@ mod tests {
         assert_eq!(q, "deploy");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::File]);
 
-        // `file ` with no needle: excerpts need a match, so nothing shows.
-        let (_, items) = build_others_base(&nodes, &contents, &others, &opts, "file ");
-        assert!(items.is_empty());
+        // `file ` with no needle: every file-editing pane lists, detail falls
+        // back to the edited path (no match to excerpt around).
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "file ");
+        assert_eq!(q, "");
+        assert_eq!(sources(&items), vec![crate::models::OtherSource::File]);
+        match &items[0] {
+            DisplayItem::Other {
+                pane_id, detail, context, ..
+            } => {
+                assert_eq!(pane_id, "pane-4");
+                assert_eq!(detail, "/repo/auth/src/main.rs");
+                assert_eq!(context, "/repo/auth/src/main.rs");
+            }
+            _ => panic!("expected Other item"),
+        }
+
+        // `term ` with no needle: terminal-output panes list, detail falls
+        // back to the first content line and context to the pane's cwd.
+        contents.insert(
+            "pane-5".to_string(),
+            "  \nls: No such file or directory\n".to_string(),
+        );
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "term ");
+        assert_eq!(q, "");
+        assert_eq!(sources(&items), vec![crate::models::OtherSource::Terminal]);
+        match &items[0] {
+            DisplayItem::Other {
+                pane_id, detail, context, ..
+            } => {
+                assert_eq!(pane_id, "pane-5");
+                assert_eq!(detail, "ls: No such file or directory");
+                assert_eq!(context, "/infra/prod");
+            }
+            _ => panic!("expected Other item"),
+        }
     }
 
     /// Others ranking must favor the detail column: a workspace/tab/pane-only

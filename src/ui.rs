@@ -560,6 +560,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool, k
 /// Build styled spans for a single flex column.
 /// Truncates text to `width`, applies search highlighting,
 /// pads right (left-align) or left (right-align).
+///
+/// Left-aligned columns reserve their last char as a gutter, so a column
+/// whose content fills the whole allocation never touches the next one.
 fn flex_col(
     text: &str,
     width: usize,
@@ -571,16 +574,24 @@ fn flex_col(
     if width == 0 {
         return vec![];
     }
-    let display = truncate_to(text, width);
+    let (content_w, gutter) = if align_right {
+        (width, 0)
+    } else {
+        (width.saturating_sub(1), 1)
+    };
+    let display = truncate_to(text, content_w);
     let mut spans = highlight_text(&display, query, base_style, hl_style);
-    let content_w = UnicodeWidthStr::width(display.as_str());
-    let pad = width.saturating_sub(content_w);
+    let display_w = UnicodeWidthStr::width(display.as_str());
+    let pad = content_w.saturating_sub(display_w);
     if pad > 0 {
         if align_right {
             spans.insert(0, Span::raw(" ".repeat(pad)));
         } else {
             spans.push(Span::raw(" ".repeat(pad)));
         }
+    }
+    if gutter > 0 {
+        spans.push(Span::raw(" ".repeat(gutter)));
     }
     spans
 }
@@ -808,7 +819,7 @@ fn row_other(
     let type_col_w = cols[1].width as usize;
     let type_text = source.label();
     let tw = UnicodeWidthStr::width(type_text);
-    let pad = type_col_w.saturating_sub(tw);
+    let pad = type_col_w.saturating_sub(tw + 1) + 1; // 1-char gutter
     sp.push(Span::styled(type_text.to_string(), source_style(source, ctx.p)));
     sp.push(Span::raw(" ".repeat(pad)));
 
@@ -819,7 +830,7 @@ fn row_other(
         let dim = Style::default().fg(if ctx.sel { ctx.p.text } else { ctx.p.overlay1 });
         sp.extend(col_spans(context, &cols[3], "", dim, hl));
     } else {
-        let display = truncate_front(context, cols[3].width as usize);
+        let display = truncate_front(context, cols[3].width.saturating_sub(1) as usize);
         sp.extend(col_spans(&display, &cols[3], ctx.query, cs, hl));
     }
     sp.extend(col_spans(tab, &cols[4], ctx.query, cs, hl));
