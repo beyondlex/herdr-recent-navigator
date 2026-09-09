@@ -62,23 +62,21 @@ impl CategoryTab {
         ]
     }
 
-    /// Move to the next tab (wrapping).
-    pub fn next(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Tabs,
-            CategoryTab::Tabs => CategoryTab::Panes,
-            CategoryTab::Panes => CategoryTab::Agents,
-            CategoryTab::Agents => CategoryTab::Workspaces,
+    /// Move to the next tab within `enabled` (wrapping). If `self` is not
+    /// enabled, returns the first enabled tab.
+    pub fn next_in(&self, enabled: &[CategoryTab]) -> Self {
+        match enabled.iter().position(|t| t == self) {
+            Some(i) => enabled[(i + 1) % enabled.len()].clone(),
+            None => enabled[0].clone(),
         }
     }
 
-    /// Move to the previous tab (wrapping).
-    pub fn previous(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Agents,
-            CategoryTab::Tabs => CategoryTab::Workspaces,
-            CategoryTab::Panes => CategoryTab::Tabs,
-            CategoryTab::Agents => CategoryTab::Panes,
+    /// Move to the previous tab within `enabled` (wrapping). If `self` is not
+    /// enabled, returns the first enabled tab.
+    pub fn previous_in(&self, enabled: &[CategoryTab]) -> Self {
+        match enabled.iter().position(|t| t == self) {
+            Some(i) => enabled[(i + enabled.len() - 1) % enabled.len()].clone(),
+            None => enabled[0].clone(),
         }
     }
 
@@ -357,6 +355,8 @@ impl Keybindings {
 pub struct AppState {
     /// Configurable keybindings.
     pub keybindings: Keybindings,
+    /// Category tabs shown in the header, in display order. Never empty.
+    pub categories: Vec<CategoryTab>,
     /// Full list of navigation nodes.
     pub nodes: Vec<NavigationNode>,
     /// Currently selected category tab.

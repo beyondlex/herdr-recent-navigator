@@ -212,7 +212,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
 // ── Sub-renderers ───────────────────────────────────────────────────────────
 
 fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, narrow: bool) {
-    let tabs = CategoryTab::all();
+    let tabs = &state.categories;
     let sel_idx = tabs
         .iter()
         .position(|t| t == &state.current_category)

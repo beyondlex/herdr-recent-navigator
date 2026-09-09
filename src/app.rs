@@ -1,11 +1,27 @@
-use crate::models::{Action, AppState, KeyAction, Keybindings};
+use crate::models::{Action, AppState, CategoryTab, KeyAction, Keybindings};
 
 impl AppState {
     pub fn new(nodes: Vec<crate::models::NavigationNode>, keybindings: Keybindings) -> Self {
+        Self::with_categories(nodes, keybindings, CategoryTab::all().to_vec())
+    }
+
+    /// Build state showing only `categories` (display order). An empty list
+    /// falls back to all tabs so the UI always has something to cycle.
+    pub fn with_categories(
+        nodes: Vec<crate::models::NavigationNode>,
+        keybindings: Keybindings,
+        categories: Vec<CategoryTab>,
+    ) -> Self {
+        let categories = if categories.is_empty() {
+            CategoryTab::all().to_vec()
+        } else {
+            categories
+        };
         AppState {
             nodes,
             keybindings,
-            current_category: crate::models::CategoryTab::Workspaces,
+            current_category: categories[0].clone(),
+            categories,
             search_query: String::new(),
             selected_index: 0,
             spinner_tick: 0,
@@ -14,6 +30,15 @@ impl AppState {
             cached_displayed: std::rc::Rc::new(Vec::new()),
             cached_total: 0,
         }
+    }
+
+    /// Set the active tab, snapping to the first enabled tab if `cat` is hidden.
+    pub fn set_category(&mut self, cat: CategoryTab) {
+        self.current_category = if self.categories.contains(&cat) {
+            cat
+        } else {
+            self.categories[0].clone()
+        };
     }
 
     /// Process a crossterm key event. `list_len` is the length of the filtered
@@ -34,12 +59,12 @@ impl AppState {
             Some(Action::ForceQuit) => KeyAction::ExitDismiss,
             Some(Action::Select) => KeyAction::ExitSelect,
             Some(Action::NextCategory) => {
-                self.current_category = self.current_category.next();
+                self.current_category = self.current_category.next_in(&self.categories);
                 self.selected_index = 0;
                 KeyAction::Continue
             }
             Some(Action::PreviousCategory) => {
-                self.current_category = self.current_category.previous();
+                self.current_category = self.current_category.previous_in(&self.categories);
                 self.selected_index = 0;
                 KeyAction::Continue
             }
@@ -142,6 +167,28 @@ mod tests {
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
         assert_eq!(state.current_category, CategoryTab::Panes);
+    }
+
+    /// With `categories` restricted, Tab/Shift+Tab skip hidden tabs and a
+    /// requested hidden tab snaps to the first enabled one.
+    #[test]
+    fn test_restricted_categories_skip_hidden_tabs() {
+        let mut state = AppState::with_categories(
+            mock_nodes(),
+            Keybindings::default(),
+            vec![CategoryTab::Workspaces, CategoryTab::Agents],
+        );
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Agents);
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+        state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
+        assert_eq!(state.current_category, CategoryTab::Agents);
+
+        state.set_category(CategoryTab::Panes);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
     }
 
     /// Number keys should append to search query (not quick-select)

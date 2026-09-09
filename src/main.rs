@@ -241,7 +241,11 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         focused_pane_info.as_ref().map(|f| f.pane_id.clone()),
     );
 
-    let mut state = AppState::new(nodes, load_manifest_keybindings());
+    let mut state = AppState::with_categories(
+        nodes,
+        load_manifest_keybindings(),
+        load_manifest_categories(),
+    );
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback 1: read the active theme from Herdr's own config, which is where
@@ -256,12 +260,12 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
     }
 
     if let Some(last) = AppState::load_last_category() {
-        state.current_category = last;
+        state.set_category(last);
     }
     if let Some(view) = &cli.view
         && let Ok(cat) = view.parse::<CategoryTab>()
     {
-        state.current_category = cat;
+        state.set_category(cat);
     }
 
     Ok((state, pane_ts, tab_ts, ws_ts, ctx, connected))
@@ -858,6 +862,34 @@ fn load_manifest_keybindings() -> Keybindings {
         }
         None => Keybindings::default(),
     }
+}
+
+/// Read `categories = ["workspaces", "agents"]` from the plugin's manifest.
+/// Returns the tabs to show, in manifest order. Unknown names are logged and
+/// skipped; a missing or empty list means all tabs.
+fn load_manifest_categories() -> Vec<CategoryTab> {
+    let Some(root) = std::env::var("HERDR_PLUGIN_ROOT").ok() else {
+        return Vec::new();
+    };
+    let path = PathBuf::from(root).join("herdr-plugin.toml");
+    let Some(value) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| c.parse::<toml::Value>().ok())
+    else {
+        return Vec::new();
+    };
+    let Some(list) = value.get("categories").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<CategoryTab> = Vec::with_capacity(list.len());
+    for item in list {
+        match item.as_str().map(str::parse::<CategoryTab>) {
+            Some(Ok(cat)) if !out.contains(&cat) => out.push(cat),
+            Some(Ok(_)) => {}
+            _ => log::warn!("manifest categories: ignoring invalid entry {item}"),
+        }
+    }
+    out
 }
 
 /// Extract pane_id from `herdr plugin pane open` JSON response.
