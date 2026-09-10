@@ -4,7 +4,6 @@ version = "0.6.2"
 description = "Recent workspaces, tabs, panes, and AI agents switcher for Herdr."
 min_herdr_version = "0.7.4"
 platforms = ["macos", "linux"]
-theme = "dark"
 
 [[build]]
 command = ["cargo", "build", "--release"]
@@ -91,16 +90,6 @@ title = "Recent Navigator"
 placement = "popup"
 width = "60%"
 command = ["./target/release/herdr-recent-navigator"]
-
-[keybindings]
-next_category = ["Tab"]
-previous_category = ["S-Tab"]
-move_up = ["Up", "C-p"]
-move_down = ["Down", "C-n"]
-select = ["Enter"]
-dismiss = ["Esc"]
-force_quit = ["C-c"]
-backspace = ["Backspace"]
 
 # Optional: order and visibility of the navigator's category tabs. The array
 # carries both — position is display order, a tab left out is hidden.

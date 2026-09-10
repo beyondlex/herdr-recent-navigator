@@ -243,7 +243,8 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         focused_pane_info.as_ref().map(|f| f.pane_id.clone()),
     );
 
-    let mut state = AppState::new(nodes, load_manifest_keybindings(), load_manifest_tabs());
+    let settings = PluginSettings::load();
+    let mut state = AppState::new(nodes, settings.keybindings(), load_manifest_tabs());
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback 1: read the active theme from Herdr's own config, which is where
@@ -252,9 +253,9 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         state.theme_name = read_herdr_config_theme();
     }
 
-    // Fallback 2: read theme from plugin manifest when nothing else provides it
+    // Fallback 2: the plugin's own settings when nothing else provides one
     if state.theme_name.is_none() {
-        state.theme_name = read_manifest_theme();
+        state.theme_name = settings.theme();
     }
 
     if let Some(last) = AppState::load_last_category() {
@@ -907,40 +908,57 @@ fn read_herdr_config_theme() -> Option<String> {
     Some(name.to_string())
 }
 
-/// Read the `theme` field from the plugin's own manifest (`herdr-plugin.toml`).
-/// Used as a last resort when neither the context nor Herdr's config provides one.
-/// Returns `None` if the manifest is missing, unreadable, or has no theme field.
-fn read_manifest_theme() -> Option<String> {
-    let root = std::env::var("HERDR_PLUGIN_ROOT").ok()?;
-    let path = PathBuf::from(root).join("herdr-plugin.toml");
-    let content = std::fs::read_to_string(path).ok()?;
-    let value: toml::Value = content.parse().ok()?;
-    value.get("theme")?.as_str().map(String::from)
+/// User-editable plugin settings (`theme`, `[keybindings]`).
+///
+/// Resolved from two layers, first match wins per top-level key:
+/// 1. `$HERDR_PLUGIN_CONFIG_DIR/config.toml`: the stable per-plugin directory
+///    Herdr provides (`herdr plugin config-dir <id>`). Survives upgrades.
+/// 2. `$HERDR_PLUGIN_ROOT/herdr-plugin.toml`: the manifest. Kept as a fallback
+///    for existing installs, but installers regenerate it, so anything set
+///    there is lost on upgrade.
+struct PluginSettings {
+    user: Option<toml::Value>,
+    manifest: Option<toml::Value>,
 }
 
-/// Read the `[keybindings]` section from the plugin's manifest.
-/// Falls back to defaults if the section is missing or unreadable.
-fn load_manifest_keybindings() -> Keybindings {
-    let root = match std::env::var("HERDR_PLUGIN_ROOT").ok() {
-        Some(r) => r,
-        None => return Keybindings::default(),
-    };
-    let path = PathBuf::from(root).join("herdr-plugin.toml");
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Keybindings::default(),
-    };
-    let value: toml::Value = match content.parse() {
-        Ok(v) => v,
-        Err(_) => return Keybindings::default(),
-    };
-    match value.get("keybindings") {
-        Some(kb) => {
-            let s = toml::to_string(&kb).unwrap_or_default();
-            toml::from_str(&s).unwrap_or_default()
-        }
-        None => Keybindings::default(),
+impl PluginSettings {
+    fn load() -> Self {
+        let user = std::env::var("HERDR_PLUGIN_CONFIG_DIR")
+            .ok()
+            .and_then(|d| read_toml(PathBuf::from(d).join("config.toml")));
+        let manifest = std::env::var("HERDR_PLUGIN_ROOT")
+            .ok()
+            .and_then(|r| read_toml(PathBuf::from(r).join("herdr-plugin.toml")));
+        PluginSettings { user, manifest }
     }
+
+    fn get(&self, key: &str) -> Option<&toml::Value> {
+        self.user
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .or_else(|| self.manifest.as_ref().and_then(|v| v.get(key)))
+    }
+
+    /// `theme = "dark" | "light"`. Last-resort theme source when neither the
+    /// plugin context nor Herdr's own config names one.
+    fn theme(&self) -> Option<String> {
+        self.get("theme")?.as_str().map(String::from)
+    }
+
+    /// `[keybindings]` table; defaults when absent or malformed.
+    fn keybindings(&self) -> Keybindings {
+        match self.get("keybindings") {
+            Some(kb) => {
+                let s = toml::to_string(kb).unwrap_or_default();
+                toml::from_str(&s).unwrap_or_default()
+            }
+            None => Keybindings::default(),
+        }
+    }
+}
+
+fn read_toml(path: PathBuf) -> Option<toml::Value> {
+    std::fs::read_to_string(path).ok()?.parse().ok()
 }
 
 /// Read the configured category tabs from the manifest's `[navigator] tabs` —
@@ -1053,6 +1071,49 @@ mod theme_resolution_tests {
         with_herdr_config(Some("[theme]\nname = \"x-day\"\n"), || {
             let expected = std::env::var("HERDR_CONFIG_PATH").unwrap();
             assert_eq!(herdr_config_path(), Some(PathBuf::from(expected)));
+        });
+    }
+}
+
+#[cfg(test)]
+mod plugin_settings_tests {
+    use super::*;
+    use crate::test_helpers::with_plugin_dirs;
+
+    const MANIFEST: &str = "id = \"x\"\ntheme = \"dark\"\n\n[keybindings]\nmove_up = [\"Up\"]\n";
+
+    #[test]
+    fn user_config_overrides_manifest_per_key() {
+        // theme set in both -> user wins; keybindings only in manifest -> manifest used
+        with_plugin_dirs(Some("theme = \"light\"\n"), Some(MANIFEST), || {
+            let s = PluginSettings::load();
+            assert_eq!(s.theme(), Some("light".to_string()));
+            assert_eq!(s.keybindings().move_up, vec!["Up".to_string()]);
+        });
+    }
+
+    #[test]
+    fn falls_back_to_manifest_when_user_config_absent() {
+        with_plugin_dirs(None, Some(MANIFEST), || {
+            let s = PluginSettings::load();
+            assert_eq!(s.theme(), Some("dark".to_string()));
+            assert_eq!(s.keybindings().move_up, vec!["Up".to_string()]);
+        });
+    }
+
+    #[test]
+    fn defaults_when_neither_file_exists() {
+        with_plugin_dirs(None, None, || {
+            let s = PluginSettings::load();
+            assert_eq!(s.theme(), None);
+            assert_eq!(s.keybindings().move_up, Keybindings::default().move_up);
+        });
+    }
+
+    #[test]
+    fn malformed_user_config_does_not_mask_manifest() {
+        with_plugin_dirs(Some("theme = [broken"), Some(MANIFEST), || {
+            assert_eq!(PluginSettings::load().theme(), Some("dark".to_string()));
         });
     }
 }

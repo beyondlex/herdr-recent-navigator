@@ -157,18 +157,30 @@ non-agent pane it jumps to the most recently focused agent.
 
 ## Configuration
 
+User settings live in `config.toml` inside the plugin's config directory, which
+Herdr keeps separate from the plugin files so upgrades never overwrite it:
+
+```bash
+herdr plugin config-dir beyondlex.herdr-recent-navigator
+# usually ~/.config/herdr/plugins/config/beyondlex.herdr-recent-navigator
+```
+
+Create `config.toml` there (the installer seeds a commented template if the
+file doesn't exist). Both `theme` and `[keybindings]` go in this one file:
+
+```toml
+theme = "light"
+
+[keybindings]
+move_up = ["Up", "C-k"]
+move_down = ["Down", "C-j"]
+```
+
+Settings still in `herdr-plugin.toml` (the old location) are honored as a
+fallback, but the installer regenerates that file on every upgrade, so move
+anything you've customized into `config.toml`.
+
 ### Theme
-
-The plugin reads its theme from the `theme` field in `herdr-plugin.toml`.
-Where to find that file depends on how you installed:
-
-| Install method | Manifest location |
-|---|---|
-| curl \| bash | `~/.local/share/herdr-recent-navigator/herdr-plugin.toml` |
-| `herdr plugin install`  | `~/.config/herdr/plugins/github/beyondlex.herdr-recent-navigator-*/herdr-plugin.toml` |
-| Build from source | `$PWD/herdr-plugin.toml` (repo root) |
-
-Add or edit the `theme` field:
 
 ```toml
 theme = "light"        # "dark" (default) or "light"
@@ -180,9 +192,8 @@ sends the theme name via `HERDR_PLUGIN_CONTEXT_JSON`.
 
 ### Keybindings
 
-All internal navigation keys are configurable via the `[keybindings]` section in
-`herdr-plugin.toml`. Each action accepts a list of key strings (multiple
-bindings per action).
+All internal navigation keys are configurable via the `[keybindings]` section.
+Each action accepts a list of key strings (multiple bindings per action).
 
 ```toml
 [keybindings]

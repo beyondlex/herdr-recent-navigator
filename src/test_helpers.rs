@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 static STATE_DIR_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CONFIG_PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PLUGIN_DIRS_LOCK: Mutex<()> = Mutex::new(());
 
 /// Create a temporary directory, set HERDR_PLUGIN_STATE_DIR to it,
 /// call the closure, then clean up.
@@ -61,6 +62,37 @@ pub fn with_herdr_config(contents: Option<&str>, f: impl FnOnce()) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     unsafe {
         std::env::remove_var("HERDR_CONFIG_PATH");
+    }
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Point `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_ROOT` at temp dirs holding
+/// `config.toml` / `herdr-plugin.toml` with the given contents (`None` = absent),
+/// call the closure, then clean up.
+pub fn with_plugin_dirs(user_config: Option<&str>, manifest: Option<&str>, f: impl FnOnce()) {
+    let _guard = match PLUGIN_DIRS_LOCK.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let config_dir = TempDir::new().expect("Failed to create temp dir");
+    let root_dir = TempDir::new().expect("Failed to create temp dir");
+    if let Some(c) = user_config {
+        std::fs::write(config_dir.path().join("config.toml"), c).expect("write config");
+    }
+    if let Some(m) = manifest {
+        std::fs::write(root_dir.path().join("herdr-plugin.toml"), m).expect("write manifest");
+    }
+    // SAFETY: We hold PLUGIN_DIRS_LOCK to prevent concurrent env var access.
+    unsafe {
+        std::env::set_var("HERDR_PLUGIN_CONFIG_DIR", config_dir.path());
+        std::env::set_var("HERDR_PLUGIN_ROOT", root_dir.path());
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    unsafe {
+        std::env::remove_var("HERDR_PLUGIN_CONFIG_DIR");
+        std::env::remove_var("HERDR_PLUGIN_ROOT");
     }
     if let Err(e) = result {
         std::panic::resume_unwind(e);
