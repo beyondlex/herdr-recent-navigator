@@ -62,7 +62,6 @@ version = "$VERSION"
 description = "Recent workspaces, tabs, panes, and AI agents switcher for Herdr."
 min_herdr_version = "0.7.4"
 platforms = ["macos", "linux"]
-theme = "dark"
 
 [[actions]]
 id = "open"
@@ -138,17 +137,6 @@ title = "Recent Navigator"
 placement = "popup"
 width = "60%"
 command = ["${INSTALL_DIR}/herdr-recent-navigator"]
-
-# Uncomment and edit to customize internal navigation keys:
-# [keybindings]
-# next_category = ["Tab"]
-# previous_category = ["S-Tab"]
-# move_up = ["Up", "C-p"]
-# move_down = ["Down", "C-n"]
-# select = ["Enter"]
-# dismiss = ["Esc"]
-# force_quit = ["C-c"]
-# backspace = ["Backspace"]
 PLUGIN_EOF
 
 # ── Symlink into PATH ────────────────────────────────
@@ -162,11 +150,41 @@ header "Linking Herdr plugin"
 if command -v herdr &>/dev/null; then
   info "Linking plugin into Herdr..."
   herdr plugin link "$INSTALL_DIR"
+
+  # Seed a settings template in Herdr's per-plugin config dir. This directory
+  # is never regenerated, so user edits survive upgrades. Never overwrite.
+  CONFIG_DIR="$(herdr plugin config-dir beyondlex.herdr-recent-navigator 2>/dev/null || true)"
+  if [ -n "$CONFIG_DIR" ]; then
+    CONFIG_FILE="$CONFIG_DIR/config.toml"
+    if [ ! -f "$CONFIG_FILE" ]; then
+      cat > "$CONFIG_FILE" <<'CONFIG_EOF'
+# Herdr Recent Navigator settings. This file is yours; upgrades never touch it.
+
+# "dark" (default) or "light"
+# theme = "dark"
+
+# Uncomment and edit to customize internal navigation keys:
+# [keybindings]
+# next_category = ["Tab"]
+# previous_category = ["S-Tab"]
+# move_up = ["Up", "C-p"]
+# move_down = ["Down", "C-n"]
+# select = ["Enter"]
+# dismiss = ["Esc"]
+# force_quit = ["C-c"]
+# backspace = ["Backspace"]
+CONFIG_EOF
+      ok "Created settings file at $CONFIG_FILE"
+    fi
+  else
+    CONFIG_FILE="\$(herdr plugin config-dir beyondlex.herdr-recent-navigator)/config.toml"
+  fi
+
   printf "\n  ${GREEN}${BOLD}✔ Installation complete!${NC}\n"
   printf "  ${DIM}Bind a shortcut to${NC} ${BOLD}recent-navigator.open${NC} ${DIM}in your Herdr config.${NC}\n"
-  printf "  ${DIM}Configure theme at${NC} ${BOLD}%s/herdr-plugin.toml${NC}${DIM}.${NC}\n\n" "$INSTALL_DIR"
+  printf "  ${DIM}Configure theme and keybindings at${NC} ${BOLD}%s${NC}${DIM}.${NC}\n\n" "$CONFIG_FILE"
 else
   warn "Herdr not found. Install Herdr first, then run:"
   printf "  ${CYAN}herdr plugin link${NC} ${DIM}%s${NC}\n" "$INSTALL_DIR"
-  printf "  ${DIM}Configure keybindings at${NC} ${BOLD}%s/herdr-plugin.toml${NC}${DIM}.${NC}\n\n" "$INSTALL_DIR"
+  printf "  ${DIM}Then configure theme and keybindings at${NC} ${BOLD}\$(herdr plugin config-dir beyondlex.herdr-recent-navigator)/config.toml${NC}${DIM}.${NC}\n\n"
 fi
