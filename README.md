@@ -262,6 +262,9 @@ to customize.
   narrows the search to one source and shows as a badge next to the input:
   type `cmd `, `ssh `, `cwd `, `file `, or `term ` (label + space), or `.`
   for buffer content only (`.` shorthand: `.file` = file buffers only).
+  `ws ` and `tab ` swap the list to the workspace or tab list — type a name
+  to fuzzy-filter down to that workspace/tab (e.g. `ws auth` = workspaces
+  matching "auth").
 
 
 ## License

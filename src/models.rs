@@ -93,20 +93,24 @@ impl OtherSource {
 }
 
 /// A narrowed-search filter for the Others tab, parsed off the query prefix
-/// and shown as a badge next to the input (`cmd `, `.`, …).
+/// and shown as a badge next to the input (`cmd `, `ws `, `.`, …).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OthersFilter {
     /// Leading `.` — buffer content rows only (file + term).
     Content,
     /// `<label> ` prefix — rows of that source only.
     Source(OtherSource),
+    /// Leading `ws ` — rows whose workspace matches the remaining text.
+    Workspace,
+    /// Leading `tab ` — rows whose tab matches the remaining text.
+    Tab,
 }
 
 impl OthersFilter {
     /// Split a leading filter off `query`, returning it with the remaining
-    /// text. A source filter activates only when its exact label is followed
-    /// by a space (`cmd `, `ssh `, `cwd `, `file `, `term `) — a bare label
-    /// stays ordinary search text.
+    /// text. A filter activates only when its exact label is followed by a
+    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `ws `, `tab `) — a
+    /// bare label stays ordinary search text.
     pub fn parse(query: &str) -> (Option<Self>, &str) {
         let (base, rest) = match query.strip_prefix('.') {
             Some(r) => (Some(OthersFilter::Content), r),
@@ -119,7 +123,24 @@ impl OthersFilter {
                 return (Some(OthersFilter::Source(src)), needle);
             }
         }
+        for (label, f) in [("ws", OthersFilter::Workspace), ("tab", OthersFilter::Tab)] {
+            if let Some(tail) = rest.strip_prefix(label)
+                && let Some(needle) = tail.strip_prefix(' ')
+            {
+                return (Some(f), needle);
+            }
+        }
         (base, rest)
+    }
+
+    /// Short label shown in the badge next to the input.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OthersFilter::Content => "content",
+            OthersFilter::Source(src) => src.label(),
+            OthersFilter::Workspace => "ws",
+            OthersFilter::Tab => "tab",
+        }
     }
 }
 
@@ -671,16 +692,55 @@ mod category_tab_tests {
             OthersFilter::parse("cwd /var/log"),
             (Some(OthersFilter::Source(OtherSource::Cwd)), "/var/log")
         );
+        assert_eq!(
+            OthersFilter::parse("ws auth"),
+            (Some(OthersFilter::Workspace), "auth")
+        );
+        assert_eq!(OthersFilter::parse("tab "), (Some(OthersFilter::Tab), ""));
+        assert_eq!(
+            OthersFilter::parse("tab main"),
+            (Some(OthersFilter::Tab), "main")
+        );
     }
 
     #[test]
     fn test_others_filter_bare_label_stays_search_text() {
         // No trailing space: the label is ordinary fuzzy text.
         assert_eq!(OthersFilter::parse("cmd"), (None, "cmd"));
+        assert_eq!(OthersFilter::parse("ws"), (None, "ws"));
+        assert_eq!(OthersFilter::parse("tab"), (None, "tab"));
         // A label-shaped prefix that is not exactly the label is plain text.
         assert_eq!(OthersFilter::parse("cmdx rest"), (None, "cmdx rest"));
+        assert_eq!(OthersFilter::parse("tabx rest"), (None, "tabx rest"));
         // A label in the middle of the query never activates a filter.
         assert_eq!(OthersFilter::parse("deploy cmd"), (None, "deploy cmd"));
+        assert_eq!(OthersFilter::parse("deploy ws"), (None, "deploy ws"));
+    }
+
+    #[test]
+    fn test_others_filter_ws_tab_not_source_aliases() {
+        // `term` is a source label, `tab` is a dimension filter: distinct.
+        assert_eq!(
+            OthersFilter::parse("term "),
+            (Some(OthersFilter::Source(OtherSource::Terminal)), "")
+        );
+        assert_eq!(OthersFilter::parse("tab "), (Some(OthersFilter::Tab), ""));
+        // Source labels still win over ws/tab.
+        assert_eq!(
+            OthersFilter::parse("cmd deploy"),
+            (Some(OthersFilter::Source(OtherSource::Cmd)), "deploy")
+        );
+    }
+
+    #[test]
+    fn test_others_filter_labels() {
+        assert_eq!(OthersFilter::Content.label(), "content");
+        assert_eq!(OthersFilter::Workspace.label(), "ws");
+        assert_eq!(OthersFilter::Tab.label(), "tab");
+        assert_eq!(
+            OthersFilter::Source(OtherSource::Ssh).label(),
+            OtherSource::Ssh.label()
+        );
     }
 
     #[test]

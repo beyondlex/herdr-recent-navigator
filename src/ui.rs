@@ -198,7 +198,18 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(chunks[2]);
-    render_column_header(frame, &state.current_category, list_chunks[0], &p, narrow);
+    // In the Others tab a `ws `/`tab ` filter swaps the list to workspace/tab
+    // entities, so the column header should match that dimension's layout.
+    let header_category = if state.current_category == CategoryTab::Others {
+        match OthersFilter::parse(&state.search_query).0 {
+            Some(OthersFilter::Workspace) => CategoryTab::Workspaces,
+            Some(OthersFilter::Tab) => CategoryTab::Tabs,
+            _ => CategoryTab::Others,
+        }
+    } else {
+        state.current_category
+    };
+    render_column_header(frame, &header_category, list_chunks[0], &p, narrow);
     // With a filter prefix (`.` / `cmd ` / …) the Others rows are keyed by
     // the remaining text (their `detail` carries the excerpt or the matched
     // value), so highlight with that — matching the raw query against them
@@ -293,13 +304,7 @@ fn render_search(
         Style::default().fg(p.text)
     };
     let badge_w = match filter {
-        Some(f) => {
-            let label = match f {
-                OthersFilter::Content => "content".len(),
-                OthersFilter::Source(src) => src.label().len(),
-            };
-            label + 4 // chip padding (" x ") + separator space
-        }
+        Some(f) => f.label().len() + 4, // chip padding (" x ") + separator space
         None => 0,
     };
     let padding_right = 2;
@@ -329,12 +334,14 @@ fn render_search(
 
 /// Colored chip shown left of the input while an Others filter is active.
 fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
-    let (label, color) = match f {
-        OthersFilter::Content => ("content", p.accent),
-        OthersFilter::Source(src) => (src.label(), source_color(&src, p)),
+    let color = match f {
+        OthersFilter::Content => p.accent,
+        OthersFilter::Source(src) => source_color(&src, p),
+        OthersFilter::Workspace => p.peach,
+        OthersFilter::Tab => p.red,
     };
     Span::styled(
-        format!(" {label} "),
+        format!(" {} ", f.label()),
         Style::default()
             .fg(p.surface_dim)
             .bg(color)

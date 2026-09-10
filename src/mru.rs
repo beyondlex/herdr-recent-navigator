@@ -542,14 +542,15 @@ fn build_content_source_items(
 /// pane-buffer content matches in ONE list. A plain query searches both —
 /// buffers by substring, state rows fuzzy. The query may carry a narrowing
 /// filter prefix (`.` = buffer content only, `cmd `/`ssh `/`cwd `/`file `/
-/// `term ` = that source only).
+/// `term ` = that source only, `ws ` = the workspace list, `tab ` = the tab
+/// list).
 ///
 /// Returns the query to fuzzy-rank and highlight with, plus the unranked
 /// rows. With an empty needle, filtered rows still list: state rows show
-/// every record of that source (so `ssh ` alone shows every ssh pane), and
-/// `file `/`term ` show every buffer pane of that kind with a preview. The
-/// bare `.` content filter needs a needle (an excerpt needs a match), so it
-/// stays empty.
+/// every record of that source (so `ssh ` alone shows every ssh pane),
+/// `file `/`term ` show every buffer pane of that kind with a preview, and
+/// `ws `/`tab ` show every workspace/tab (MRU). The bare `.` content filter
+/// needs a needle (an excerpt needs a match), so it stays empty.
 pub fn build_others_base(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
@@ -604,6 +605,14 @@ pub fn build_others_base(
             }
             _ => by_source(build_display_list(nodes, opts, &CategoryTab::Others), src),
         },
+        // `ws ` / `tab ` swap the list to the matching dimension's entities,
+        // so typing a workspace/tab name filters down to it directly.
+        Some(crate::models::OthersFilter::Workspace) => {
+            build_display_list(nodes, opts, &CategoryTab::Workspaces)
+        }
+        Some(crate::models::OthersFilter::Tab) => {
+            build_display_list(nodes, opts, &CategoryTab::Tabs)
+        }
         Some(crate::models::OthersFilter::Content) => content_rows(needle),
         None => {
             let mut items = build_display_list(nodes, opts, &CategoryTab::Others);
@@ -1450,6 +1459,85 @@ mod tests {
             }
             _ => panic!("expected Other item"),
         }
+    }
+
+    /// Dimension filters swap the Others list to that dimension's entities:
+    /// `ws ` lists workspaces, `tab ` lists tabs; typing a name fuzzy-filters
+    /// the list down to matching entities.
+    #[test]
+    fn test_build_others_base_ws_tab_filters() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let contents = HashMap::new();
+        let others = others_map();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+
+        // `ws ` (empty needle): the workspace list.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws ");
+        assert_eq!(q, "");
+        let names: Vec<&str> = items
+            .iter()
+            .filter_map(|it| match it {
+                DisplayItem::Workspace { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Auth-Service",
+                "Backend-Repo",
+                "Frontend-UI",
+                "Infra-Deploy"
+            ]
+        );
+
+        // `tab ` (empty needle): the tab list.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab ");
+        assert_eq!(q, "");
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|it| matches!(it, DisplayItem::Tab { .. })));
+
+        // Fuzzy-filter the two lists with a needle (ranked_query is consumed
+        // by search_display_items, exactly as in the app event loop).
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws auth");
+        assert_eq!(q, "auth");
+        let ranked = search_display_items(&items, &q);
+        let names: Vec<&str> = ranked
+            .iter()
+            .filter_map(|it| match it {
+                DisplayItem::Workspace { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["Auth-Service"]);
+
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab prod");
+        assert_eq!(q, "prod");
+        let ranked = search_display_items(&items, &q);
+        let names: Vec<&str> = ranked
+            .iter()
+            .filter_map(|it| match it {
+                DisplayItem::Tab { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["Prod"]);
+
+        // No workspace/tab matches the text: empty result.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws nope");
+        assert!(search_display_items(&items, &q).is_empty());
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab nope");
+        assert!(search_display_items(&items, &q).is_empty());
     }
 
     /// Others ranking must favor the detail column: a workspace/tab/pane-only
