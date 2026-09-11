@@ -244,7 +244,7 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
     );
 
     let settings = PluginSettings::load();
-    let mut state = AppState::new(nodes, settings.keybindings(), load_manifest_tabs());
+    let mut state = AppState::new(nodes, settings.keybindings(), settings.tabs());
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback 1: read the active theme from Herdr's own config, which is where
@@ -664,7 +664,8 @@ fn run_event_loop(
             let tx = contents_tx.clone();
             let flag = contents_in_flight.clone();
             std::thread::spawn(move || {
-                let _ = crate::ipc::refresh_contents(&nodes, &mut contents, self_pane_id.as_deref());
+                let _ =
+                    crate::ipc::refresh_contents(&nodes, &mut contents, self_pane_id.as_deref());
                 let _ = tx.send(contents);
                 flag.store(false, Ordering::Relaxed);
             });
@@ -908,7 +909,7 @@ fn read_herdr_config_theme() -> Option<String> {
     Some(name.to_string())
 }
 
-/// User-editable plugin settings (`theme`, `[keybindings]`).
+/// User-editable plugin settings (`theme`, `[keybindings]`, `[navigator]`).
 ///
 /// Resolved from two layers, first match wins per top-level key:
 /// 1. `$HERDR_PLUGIN_CONFIG_DIR/config.toml`: the stable per-plugin directory
@@ -955,43 +956,33 @@ impl PluginSettings {
             None => Keybindings::default(),
         }
     }
+
+    /// `[navigator] tabs`: one ordered array carrying both display order and
+    /// visibility (a tab left out is hidden). A missing section/field means
+    /// "all tabs, default order"; an explicitly empty or invalid list is
+    /// normalized by `parse_tabs` down to just `All`.
+    fn tabs(&self) -> Vec<CategoryTab> {
+        let raw: Vec<String> = self
+            .get("navigator")
+            .and_then(|n| n.get("tabs"))
+            .and_then(|t| t.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                CategoryTab::all()
+                    .iter()
+                    .map(|t| t.label().to_lowercase())
+                    .collect()
+            });
+        parse_tabs(&raw)
+    }
 }
 
 fn read_toml(path: PathBuf) -> Option<toml::Value> {
     std::fs::read_to_string(path).ok()?.parse().ok()
-}
-
-/// Read the configured category tabs from the manifest's `[navigator] tabs` —
-/// one ordered array carrying both display order and visibility (a tab left
-/// out is hidden). A missing section/field means "all tabs, default order";
-/// an explicitly empty or invalid list is normalized by `parse_tabs` down to
-/// just `All`.
-fn load_manifest_tabs() -> Vec<CategoryTab> {
-    let Some(root) = std::env::var("HERDR_PLUGIN_ROOT").ok() else {
-        return CategoryTab::all().to_vec();
-    };
-    let Ok(content) = std::fs::read_to_string(PathBuf::from(root).join("herdr-plugin.toml")) else {
-        return CategoryTab::all().to_vec();
-    };
-    let Ok(value) = content.parse::<toml::Value>() else {
-        return CategoryTab::all().to_vec();
-    };
-    let raw: Vec<String> = value
-        .get("navigator")
-        .and_then(|n| n.get("tabs"))
-        .and_then(|t| t.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            CategoryTab::all()
-                .iter()
-                .map(|t| t.label().to_lowercase())
-                .collect()
-        });
-    parse_tabs(&raw)
 }
 
 /// Extract pane_id from `herdr plugin pane open` JSON response.
@@ -1107,6 +1098,30 @@ mod plugin_settings_tests {
             let s = PluginSettings::load();
             assert_eq!(s.theme(), None);
             assert_eq!(s.keybindings().move_up, Keybindings::default().move_up);
+        });
+    }
+
+    #[test]
+    fn user_config_tabs_override_manifest() {
+        let manifest = "[navigator]\ntabs = [\"panes\", \"all\"]\n";
+        with_plugin_dirs(
+            Some("[navigator]\ntabs = [\"workspaces\", \"agents\"]\n"),
+            Some(manifest),
+            || {
+                assert_eq!(
+                    PluginSettings::load().tabs(),
+                    vec![CategoryTab::Workspaces, CategoryTab::Agents]
+                );
+            },
+        );
+        with_plugin_dirs(Some("theme = \"light\"\n"), Some(manifest), || {
+            assert_eq!(
+                PluginSettings::load().tabs(),
+                vec![CategoryTab::Panes, CategoryTab::All]
+            );
+        });
+        with_plugin_dirs(None, None, || {
+            assert_eq!(PluginSettings::load().tabs(), CategoryTab::all().to_vec());
         });
     }
 

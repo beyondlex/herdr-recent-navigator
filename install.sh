@@ -173,6 +173,11 @@ if command -v herdr &>/dev/null; then
 # dismiss = ["Esc"]
 # force_quit = ["C-c"]
 # backspace = ["Backspace"]
+
+# Order and visibility of the category tabs: position is display order, a tab
+# left out is hidden. Valid names: workspaces, tabs, panes, agents, all.
+# [navigator]
+# tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 CONFIG_EOF
       ok "Created settings file at $CONFIG_FILE"
     fi
