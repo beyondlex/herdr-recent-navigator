@@ -578,13 +578,13 @@ fn run_event_loop(
     let (refresh_tx, refresh_rx) = mpsc::channel();
     let refresh_in_flight = Arc::new(AtomicBool::new(false));
 
-    // Lazy "Others" state refresh: cwd + foreground command/ssh, re-fetched
-    // only while the Others tab is active (callers pay the process-info cost).
+    // Lazy "All" state refresh: cwd + foreground command/ssh, re-fetched
+    // only while the All tab is active (callers pay the process-info cost).
     let (others_tx, others_rx) = mpsc::channel();
     let others_in_flight = Arc::new(AtomicBool::new(false));
     let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
 
-    // Lazy pane-buffer cache for `.`-prefixed content search in the Others tab.
+    // Lazy pane-buffer cache for `.`-prefixed content search in the All tab.
     // Fetched only while a dot query is active; one `pane read` per uncached pane.
     let (contents_tx, contents_rx) = mpsc::channel();
     let contents_in_flight = Arc::new(AtomicBool::new(false));
@@ -625,9 +625,9 @@ fn run_event_loop(
             state.cache_key = None; // nodes changed, invalidate cache
         }
 
-        // ── Lazy "Others" state refresh (cwd / command / ssh) ──
+        // ── Lazy "All" state refresh (cwd / command / ssh) ──
         if connected
-            && state.current_category == CategoryTab::Others
+            && state.current_category == CategoryTab::All
             && others_last_fetch.elapsed() >= Duration::from_secs(10)
             && !others_in_flight.load(Ordering::Relaxed)
         {
@@ -648,10 +648,10 @@ fn run_event_loop(
             state.cache_key = None; // others changed, invalidate cache
         }
 
-        // ── Lazy pane-buffer cache for Others content rows ──
-        let others_tab = state.current_category == CategoryTab::Others;
+        // ── Lazy pane-buffer cache for All content rows ──
+        let all_tab = state.current_category == CategoryTab::All;
         if connected
-            && others_tab
+            && all_tab
             && contents_last_fetch.elapsed() >= Duration::from_secs(30)
             && !contents_in_flight.load(Ordering::Relaxed)
         {
@@ -696,7 +696,7 @@ fn run_event_loop(
             (state.cached_displayed.clone(), state.cached_total)
         } else {
             // Cache miss: rebuild
-            let (query, items) = if state.current_category == CategoryTab::Others {
+            let (query, items) = if state.current_category == CategoryTab::All {
                 // State records and buffer content matches in one list; a
                 // leading `.` narrows to buffer content only.
                 mru::build_others_base(
@@ -947,7 +947,7 @@ fn load_manifest_keybindings() -> Keybindings {
 /// one ordered array carrying both display order and visibility (a tab left
 /// out is hidden). A missing section/field means "all tabs, default order";
 /// an explicitly empty or invalid list is normalized by `parse_tabs` down to
-/// just `Others`.
+/// just `All`.
 fn load_manifest_tabs() -> Vec<CategoryTab> {
     let Some(root) = std::env::var("HERDR_PLUGIN_ROOT").ok() else {
         return CategoryTab::all().to_vec();

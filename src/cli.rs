@@ -9,7 +9,7 @@ pub struct Cli {
     pub command: Option<Command>,
 
     /// Default view category tab to open.
-    #[arg(long = "view", value_parser = ["workspaces", "tabs", "agents", "panes", "others"])]
+    #[arg(long = "view", value_parser = ["workspaces", "tabs", "agents", "panes", "all", "others"])]
     pub view: Option<String>,
 
     /// Open the overlay pane (called by plugin_action keybinding).

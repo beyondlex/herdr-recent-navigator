@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(state.current_category, CategoryTab::Agents);
 
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
 
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
         assert_eq!(state.current_category, CategoryTab::Workspaces);
@@ -170,7 +170,7 @@ mod tests {
         let mut state = make_state();
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
         assert_eq!(state.current_category, CategoryTab::Agents);
@@ -183,16 +183,16 @@ mod tests {
         let mut state = AppState::new(
             mock_nodes(),
             Keybindings::default(),
-            vec![CategoryTab::Others, CategoryTab::Workspaces],
+            vec![CategoryTab::All, CategoryTab::Workspaces],
         );
         // Starts on the first configured tab, not the global default.
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
 
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
         assert_eq!(state.current_category, CategoryTab::Workspaces);
         // Wraps within the configured list — Panes/Tabs/Agents are skipped.
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
         assert_eq!(state.current_category, CategoryTab::Workspaces);
     }
@@ -201,16 +201,12 @@ mod tests {
     /// the configured list falls back into it instead of getting stuck.
     #[test]
     fn test_single_tab_and_out_of_list_current() {
-        let mut state = AppState::new(
-            mock_nodes(),
-            Keybindings::default(),
-            vec![CategoryTab::Others],
-        );
+        let mut state = AppState::new(mock_nodes(), Keybindings::default(), vec![CategoryTab::All]);
         state.current_category = CategoryTab::Panes; // e.g. persisted earlier
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Others);
+        assert_eq!(state.current_category, CategoryTab::All);
     }
 
     /// Number keys should append to search query (not quick-select)

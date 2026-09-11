@@ -40,7 +40,7 @@ pub struct NavigationNode {
     pub last_accessed_at: u64,
 }
 
-/// The source kind of an "Others" row: which runtime state dimension a pane
+/// The source kind of an "All" row: which runtime state dimension a pane
 /// record represents. Not identity — `cmd`/`ssh`/`cwd`/`file` describe what
 /// the pane is doing/where it is/what it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +92,7 @@ impl OtherSource {
     }
 }
 
-/// A narrowed-search filter for the Others tab, parsed off the query prefix
+/// A narrowed-search filter for the All tab, parsed off the query prefix
 /// and shown as a badge next to the input (`cmd `, `ws `, `.`, …).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OthersFilter {
@@ -100,17 +100,19 @@ pub enum OthersFilter {
     Content,
     /// `<label> ` prefix — rows of that source only.
     Source(OtherSource),
-    /// Leading `ws ` — rows whose workspace matches the remaining text.
+    /// Leading `ws ` — the workspace list, filtered by the remaining text.
     Workspace,
-    /// Leading `tab ` — rows whose tab matches the remaining text.
+    /// Leading `tab ` — the tab list, filtered by the remaining text.
     Tab,
+    /// Leading `pane ` — the pane list, filtered by the remaining text.
+    Pane,
 }
 
 impl OthersFilter {
     /// Split a leading filter off `query`, returning it with the remaining
     /// text. A filter activates only when its exact label is followed by a
-    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `ws `, `tab `) — a
-    /// bare label stays ordinary search text.
+    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `ws `, `tab `,
+    /// `pane `) — a bare label stays ordinary search text.
     pub fn parse(query: &str) -> (Option<Self>, &str) {
         let (base, rest) = match query.strip_prefix('.') {
             Some(r) => (Some(OthersFilter::Content), r),
@@ -123,7 +125,11 @@ impl OthersFilter {
                 return (Some(OthersFilter::Source(src)), needle);
             }
         }
-        for (label, f) in [("ws", OthersFilter::Workspace), ("tab", OthersFilter::Tab)] {
+        for (label, f) in [
+            ("ws", OthersFilter::Workspace),
+            ("tab", OthersFilter::Tab),
+            ("pane", OthersFilter::Pane),
+        ] {
             if let Some(tail) = rest.strip_prefix(label)
                 && let Some(needle) = tail.strip_prefix(' ')
             {
@@ -140,13 +146,14 @@ impl OthersFilter {
             OthersFilter::Source(src) => src.label(),
             OthersFilter::Workspace => "ws",
             OthersFilter::Tab => "tab",
+            OthersFilter::Pane => "pane",
         }
     }
 }
 
-/// Lazily-fetched runtime state for a pane, used by the Others tab.
+/// Lazily-fetched runtime state for a pane, used by the All tab.
 /// Unlike `NavigationNode` (refreshed every 2s), this is refetched only while
-/// the Others tab is active, and only once per pane per refresh window.
+/// the All tab is active, and only once per pane per refresh window.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaneOthers {
     pub cwd: Option<String>,
@@ -161,10 +168,11 @@ pub enum CategoryTab {
     Tabs,
     Agents,
     Panes,
-    /// Pane state search (cmd / ssh / cwd) and pane-buffer content search in
-    /// one list; a leading `.` narrows to buffer content only. Excludes agent
-    /// panes.
-    Others,
+    /// Unified search across everything: pane state (cmd / ssh / cwd) and
+    /// pane-buffer content in one list; a leading `.` narrows to buffer
+    /// content only, `ws `/`tab `/`pane ` swap to that dimension's list.
+    /// Excludes agent panes.
+    All,
 }
 
 impl CategoryTab {
@@ -178,7 +186,7 @@ impl CategoryTab {
             CategoryTab::Tabs,
             CategoryTab::Panes,
             CategoryTab::Agents,
-            CategoryTab::Others,
+            CategoryTab::All,
         ]
     }
 
@@ -189,7 +197,7 @@ impl CategoryTab {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Agents => "Agents",
             CategoryTab::Panes => "Panes",
-            CategoryTab::Others => "Others",
+            CategoryTab::All => "All",
         }
     }
 }
@@ -197,7 +205,7 @@ impl CategoryTab {
 /// Parse the configured tab list. The array carries both order and
 /// visibility: position is display order, membership is shown-at-all.
 /// Unknown labels are ignored and duplicates deduped (first wins); an empty
-/// or all-invalid list degrades to `["others"]` — the navigator must always
+/// or all-invalid list degrades to `["all"]` — the navigator must always
 /// show at least one tab.
 pub fn parse_tabs(spec: &[String]) -> Vec<CategoryTab> {
     let mut tabs: Vec<CategoryTab> = Vec::new();
@@ -209,7 +217,7 @@ pub fn parse_tabs(spec: &[String]) -> Vec<CategoryTab> {
         }
     }
     if tabs.is_empty() {
-        vec![CategoryTab::Others]
+        vec![CategoryTab::All]
     } else {
         tabs
     }
@@ -536,9 +544,9 @@ pub struct AppState {
     pub cached_displayed: Rc<Vec<DisplayItem>>,
     /// Total items before search filtering; shown in the status bar count.
     pub cached_total: usize,
-    /// Lazily-fetched pane runtime state for the Others tab (cmd/ssh/cwd).
+    /// Lazily-fetched pane runtime state for the All tab (cmd/ssh/cwd).
     pub others: HashMap<String, PaneOthers>,
-    /// Cached ANSI-stripped pane buffers backing the Others tab's content rows.
+    /// Cached ANSI-stripped pane buffers backing the All tab's content rows.
     pub contents: HashMap<String, String>,
 }
 
@@ -586,7 +594,9 @@ impl std::str::FromStr for CategoryTab {
             "tabs" => Ok(CategoryTab::Tabs),
             "agents" => Ok(CategoryTab::Agents),
             "panes" => Ok(CategoryTab::Panes),
-            "others" => Ok(CategoryTab::Others),
+            "all" => Ok(CategoryTab::All),
+            // Legacy name accepted so existing configs/CLI keep working.
+            "others" => Ok(CategoryTab::All),
             _ => Err(format!("Unknown category tab: {s}")),
         }
     }
@@ -623,11 +633,10 @@ mod category_tab_tests {
     }
 
     #[test]
-    fn test_category_tab_from_str_others() {
-        assert_eq!(
-            "others".parse::<CategoryTab>().unwrap(),
-            CategoryTab::Others
-        );
+    fn test_category_tab_from_str_all() {
+        assert_eq!("all".parse::<CategoryTab>().unwrap(), CategoryTab::All);
+        // Legacy name still maps to the All tab.
+        assert_eq!("others".parse::<CategoryTab>().unwrap(), CategoryTab::All);
     }
 
     #[test]
@@ -648,10 +657,10 @@ mod category_tab_tests {
 
     #[test]
     fn test_parse_tabs_reorders_and_hides() {
-        let spec = vec!["others".to_string(), "workspaces".to_string()];
+        let spec = vec!["all".to_string(), "workspaces".to_string()];
         assert_eq!(
             parse_tabs(&spec),
-            vec![CategoryTab::Others, CategoryTab::Workspaces]
+            vec![CategoryTab::All, CategoryTab::Workspaces]
         );
     }
 
@@ -661,19 +670,29 @@ mod category_tab_tests {
             "agents".to_string(),
             "nope".to_string(),
             " agents ".to_string(),
-            "others".to_string(),
+            "all".to_string(),
         ];
         assert_eq!(
             parse_tabs(&spec),
-            vec![CategoryTab::Agents, CategoryTab::Others]
+            vec![CategoryTab::Agents, CategoryTab::All]
         );
     }
 
     #[test]
-    fn test_parse_tabs_empty_or_all_invalid_keeps_others() {
+    fn test_parse_tabs_accepts_legacy_others_alias() {
+        let spec = vec!["others".to_string(), "workspaces".to_string()];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::All, CategoryTab::Workspaces],
+            "legacy `others` token maps to the All tab"
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_empty_or_all_invalid_keeps_all() {
         // Nothing configured to show: the navigator must keep one tab.
-        assert_eq!(parse_tabs(&[]), vec![CategoryTab::Others]);
-        assert_eq!(parse_tabs(&["nope".to_string()]), vec![CategoryTab::Others]);
+        assert_eq!(parse_tabs(&[]), vec![CategoryTab::All]);
+        assert_eq!(parse_tabs(&["nope".to_string()]), vec![CategoryTab::All]);
     }
 
     // ── OthersFilter::parse ──
@@ -701,6 +720,10 @@ mod category_tab_tests {
             OthersFilter::parse("tab main"),
             (Some(OthersFilter::Tab), "main")
         );
+        assert_eq!(
+            OthersFilter::parse("pane nvim"),
+            (Some(OthersFilter::Pane), "nvim")
+        );
     }
 
     #[test]
@@ -709,6 +732,7 @@ mod category_tab_tests {
         assert_eq!(OthersFilter::parse("cmd"), (None, "cmd"));
         assert_eq!(OthersFilter::parse("ws"), (None, "ws"));
         assert_eq!(OthersFilter::parse("tab"), (None, "tab"));
+        assert_eq!(OthersFilter::parse("pane"), (None, "pane"));
         // A label-shaped prefix that is not exactly the label is plain text.
         assert_eq!(OthersFilter::parse("cmdx rest"), (None, "cmdx rest"));
         assert_eq!(OthersFilter::parse("tabx rest"), (None, "tabx rest"));
@@ -737,6 +761,7 @@ mod category_tab_tests {
         assert_eq!(OthersFilter::Content.label(), "content");
         assert_eq!(OthersFilter::Workspace.label(), "ws");
         assert_eq!(OthersFilter::Tab.label(), "tab");
+        assert_eq!(OthersFilter::Pane.label(), "pane");
         assert_eq!(
             OthersFilter::Source(OtherSource::Ssh).label(),
             OtherSource::Ssh.label()

@@ -109,7 +109,7 @@ pub fn tab_label(tab: &CategoryTab, narrow: bool) -> &'static str {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Panes => "Panes",
             CategoryTab::Agents => "Agents",
-            CategoryTab::Others => "Oth",
+            CategoryTab::All => "All",
         }
     } else {
         tab.label()
@@ -269,6 +269,12 @@ mod tests {
     fn test_tab_label_agents() {
         assert_eq!(tab_label(&CategoryTab::Agents, false), "Agents");
         assert_eq!(tab_label(&CategoryTab::Agents, true), "Agents");
+    }
+
+    #[test]
+    fn test_tab_label_all() {
+        assert_eq!(tab_label(&CategoryTab::All, false), "All");
+        assert_eq!(tab_label(&CategoryTab::All, true), "All");
     }
 
     // ── min_terminal_size tests ──

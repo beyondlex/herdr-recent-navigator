@@ -46,11 +46,11 @@ contexts = ["global", "workspace"]
 command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "panes"]
 
 [[actions]]
-id = "focus-others"
-title = "Quick Focus: Others"
-description = "Open navigator focused on Others tab (cmd/ssh/cwd + full-text buffer search)"
+id = "focus-all"
+title = "Quick Focus: All"
+description = "Open navigator focused on All tab (cmd/ssh/cwd + full-text buffer search)"
 contexts = ["global", "workspace"]
-command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "others"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "all"]
 
 [[actions]]
 id = "focus-previous-tab"
@@ -104,7 +104,8 @@ backspace = ["Backspace"]
 
 # Optional: order and visibility of the navigator's category tabs. The array
 # carries both — position is display order, a tab left out is hidden.
-# Valid names: workspaces, tabs, panes, agents, others. At least one tab is
-# enforced (an empty or all-invalid list falls back to ["others"]).
+# Valid names: workspaces, tabs, panes, agents, all (others = legacy alias).
+# At least one tab is enforced (an empty or all-invalid list falls back to
+# ["all"]).
 # [navigator]
-# tabs = ["workspaces", "tabs", "panes", "agents", "others"]
+# tabs = ["workspaces", "tabs", "panes", "agents", "all"]

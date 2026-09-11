@@ -198,23 +198,25 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(chunks[2]);
-    // In the Others tab a `ws `/`tab ` filter swaps the list to workspace/tab
-    // entities, so the column header should match that dimension's layout.
-    let header_category = if state.current_category == CategoryTab::Others {
+    // In the All tab a `ws `/`tab `/`pane ` filter swaps the list to
+    // workspace/tab/pane entities, so the column header should match that
+    // dimension's layout.
+    let header_category = if state.current_category == CategoryTab::All {
         match OthersFilter::parse(&state.search_query).0 {
             Some(OthersFilter::Workspace) => CategoryTab::Workspaces,
             Some(OthersFilter::Tab) => CategoryTab::Tabs,
-            _ => CategoryTab::Others,
+            Some(OthersFilter::Pane) => CategoryTab::Panes,
+            _ => CategoryTab::All,
         }
     } else {
         state.current_category
     };
     render_column_header(frame, &header_category, list_chunks[0], &p, narrow);
-    // With a filter prefix (`.` / `cmd ` / …) the Others rows are keyed by
+    // With a filter prefix (`.` / `cmd ` / …) the All rows are keyed by
     // the remaining text (their `detail` carries the excerpt or the matched
     // value), so highlight with that — matching the raw query against them
     // would find nothing.
-    let highlight_query = if state.current_category == CategoryTab::Others {
+    let highlight_query = if state.current_category == CategoryTab::All {
         OthersFilter::parse(&state.search_query).1
     } else {
         state.search_query.as_str()
@@ -283,9 +285,9 @@ fn render_search(
     p: &Palette,
 ) {
     let prefix = " > ";
-    // In the Others tab a filter prefix (`cmd `, `.`, …) is lifted out of the
+    // In the All tab a filter prefix (`cmd `, `.`, …) is lifted out of the
     // query and shown as a badge chip; the rest is the live search text.
-    let (filter, rest) = if state.current_category == CategoryTab::Others {
+    let (filter, rest) = if state.current_category == CategoryTab::All {
         OthersFilter::parse(&state.search_query)
     } else {
         (None, state.search_query.as_str())
@@ -332,13 +334,14 @@ fn render_search(
     );
 }
 
-/// Colored chip shown left of the input while an Others filter is active.
+/// Colored chip shown left of the input while an All filter is active.
 fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
     let color = match f {
         OthersFilter::Content => p.accent,
         OthersFilter::Source(src) => source_color(&src, p),
         OthersFilter::Workspace => p.peach,
         OthersFilter::Tab => p.red,
+        OthersFilter::Pane => p.blue,
     };
     Span::styled(
         format!(" {} ", f.label()),
@@ -365,7 +368,7 @@ fn render_column_header(
         CategoryTab::Tabs => (&["Tab", "Workspace", "Agent"], 1, &col_layout::TAB),
         CategoryTab::Agents => (&["Agent", "Tab", "Workspace"], 2, &col_layout::AGENT),
         CategoryTab::Workspaces => (&["Workspace", "Agent"], 1, &col_layout::WORKSPACE),
-        CategoryTab::Others => (
+        CategoryTab::All => (
             &["Type", "Detail", "Context", "Tab", "Workspace"],
             1,
             &col_layout::OTHER,

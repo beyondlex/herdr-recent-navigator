@@ -37,7 +37,7 @@ pub struct BuildOptions<'a> {
     pub active_pane_id: Option<&'a str>,
     pub active_tab_id: Option<&'a str>,
     pub self_pane_id: Option<&'a str>,
-    /// Pane runtime state for the Others tab (cmd/ssh/cwd).
+    /// Pane runtime state for the All tab (cmd/ssh/cwd).
     pub others: &'a HashMap<String, PaneOthers>,
 }
 
@@ -94,7 +94,7 @@ pub fn build_display_list(
         CategoryTab::Panes => {
             build_pane_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id)
         }
-        CategoryTab::Others => {
+        CategoryTab::All => {
             build_other_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id, opts.others)
         }
     }
@@ -275,7 +275,7 @@ fn build_pane_items(
     items
 }
 
-/// Build the "Others" display list: one record per (pane × source).
+/// Build the "All" display list: one record per (pane × source).
 ///
 /// Excludes agent panes (their identity/buffer is the Agent tab's job) and
 /// emits one `DisplayItem::Other` per available source: `ssh` target, `cmd`
@@ -356,7 +356,7 @@ fn file_context(path: String, line: Option<u32>, cwd: Option<&str>) -> String {
     }
 }
 
-/// Build the base list for `.`-prefixed content search in the Others tab:
+/// Build the base list for `.`-prefixed content search in the All tab:
 /// one `DisplayItem::Other` per non-agent pane whose buffer matches `query`,
 /// with `detail` = a one-line excerpt around the first hit. Rows inherit the
 /// pane's MRU timestamp.
@@ -538,19 +538,20 @@ fn build_content_source_items(
     items
 }
 
-/// Base list for the Others tab: pane-state records (cmd/ssh/cwd) and
+/// Base list for the All tab: pane-state records (cmd/ssh/cwd) and
 /// pane-buffer content matches in ONE list. A plain query searches both —
 /// buffers by substring, state rows fuzzy. The query may carry a narrowing
 /// filter prefix (`.` = buffer content only, `cmd `/`ssh `/`cwd `/`file `/
-/// `term ` = that source only, `ws ` = the workspace list, `tab ` = the tab
-/// list).
+/// `term ` = that source only, `ws `/`tab `/`pane ` = the workspace, tab or
+/// pane list).
 ///
 /// Returns the query to fuzzy-rank and highlight with, plus the unranked
 /// rows. With an empty needle, filtered rows still list: state rows show
 /// every record of that source (so `ssh ` alone shows every ssh pane),
 /// `file `/`term ` show every buffer pane of that kind with a preview, and
-/// `ws `/`tab ` show every workspace/tab (MRU). The bare `.` content filter
-/// needs a needle (an excerpt needs a match), so it stays empty.
+/// `ws `/`tab `/`pane ` show every workspace/tab/pane (MRU). The bare `.`
+/// content filter needs a needle (an excerpt needs a match), so it stays
+/// empty.
 pub fn build_others_base(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
@@ -603,19 +604,22 @@ pub fn build_others_base(
             crate::models::OtherSource::File | crate::models::OtherSource::Terminal => {
                 by_source(content_rows(needle), src)
             }
-            _ => by_source(build_display_list(nodes, opts, &CategoryTab::Others), src),
+            _ => by_source(build_display_list(nodes, opts, &CategoryTab::All), src),
         },
-        // `ws ` / `tab ` swap the list to the matching dimension's entities,
-        // so typing a workspace/tab name filters down to it directly.
+        // `ws ` / `tab ` / `pane ` swap the list to the matching dimension's
+        // entities, so typing a name fuzzy-filters down to it directly.
         Some(crate::models::OthersFilter::Workspace) => {
             build_display_list(nodes, opts, &CategoryTab::Workspaces)
         }
         Some(crate::models::OthersFilter::Tab) => {
             build_display_list(nodes, opts, &CategoryTab::Tabs)
         }
+        Some(crate::models::OthersFilter::Pane) => {
+            build_display_list(nodes, opts, &CategoryTab::Panes)
+        }
         Some(crate::models::OthersFilter::Content) => content_rows(needle),
         None => {
-            let mut items = build_display_list(nodes, opts, &CategoryTab::Others);
+            let mut items = build_display_list(nodes, opts, &CategoryTab::All);
             if !needle.is_empty() {
                 items.extend(content_rows(needle));
             }
@@ -1044,7 +1048,7 @@ mod tests {
         }
     }
 
-    // ── Others tab ──
+    // ── All tab ──
 
     fn others_map() -> HashMap<String, PaneOthers> {
         let mut map: HashMap<String, PaneOthers> = HashMap::new();
@@ -1067,7 +1071,7 @@ mod tests {
         map
     }
 
-    /// Others emits one record per (pane × source); agent panes and login
+    /// All emits one record per (pane × source); agent panes and login
     /// shells are excluded; records group by pane in priority order.
     #[test]
     fn test_build_other_items_records_and_excludes() {
@@ -1084,14 +1088,14 @@ mod tests {
             self_pane_id: None,
             others: &others,
         };
-        let items = build_display_list(&nodes, &opts, &CategoryTab::Others);
+        let items = build_display_list(&nodes, &opts, &CategoryTab::All);
         // pane-4: ssh + cmd + cwd = 3 records; pane-5: cwd only (shell filtered) = 1.
         assert_eq!(items.len(), 4);
         for item in &items {
             if let DisplayItem::Other { pane_id, .. } = item {
                 assert!(
                     !matches!(pane_id.as_str(), "pane-1" | "pane-2" | "pane-3"),
-                    "agent panes must be excluded from Others"
+                    "agent panes must be excluded from All"
                 );
             } else {
                 panic!("Expected Other item");
@@ -1132,7 +1136,7 @@ mod tests {
             self_pane_id: None,
             others: &others,
         };
-        let items = build_display_list(&nodes, &opts, &CategoryTab::Others);
+        let items = build_display_list(&nodes, &opts, &CategoryTab::All);
         let ctx_of = |pane: &str, src: crate::models::OtherSource| -> String {
             items
                 .iter()
@@ -1307,7 +1311,7 @@ mod tests {
         );
     }
 
-    /// Others base list: a plain query mixes state records and buffer
+    /// All base list: a plain query mixes state records and buffer
     /// content matches; a leading `.` narrows to buffer content only; an
     /// empty query lists state records alone.
     #[test]
@@ -1461,7 +1465,7 @@ mod tests {
         }
     }
 
-    /// Dimension filters swap the Others list to that dimension's entities:
+    /// Dimension filters swap the All list to that dimension's entities:
     /// `ws ` lists workspaces, `tab ` lists tabs; typing a name fuzzy-filters
     /// the list down to matching entities.
     #[test]
@@ -1533,14 +1537,28 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["Prod"]);
 
-        // No workspace/tab matches the text: empty result.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "pane pane-4");
+        assert_eq!(q, "pane-4");
+        let ranked = search_display_items(&items, &q);
+        let names: Vec<&str> = ranked
+            .iter()
+            .filter_map(|it| match it {
+                DisplayItem::Pane { pane_name, .. } => Some(pane_name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["pane-4"]);
+
+        // No workspace/tab/pane matches the text: empty result.
         let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws nope");
         assert!(search_display_items(&items, &q).is_empty());
         let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab nope");
         assert!(search_display_items(&items, &q).is_empty());
+        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "pane nope");
+        assert!(search_display_items(&items, &q).is_empty());
     }
 
-    /// Others ranking must favor the detail column: a workspace/tab/pane-only
+    /// All ranking must favor the detail column: a workspace/tab/pane-only
     /// fuzzy hit must not outrank a row whose detail fully matches the query.
     #[test]
     fn test_other_search_prioritizes_detail_column() {
@@ -1605,7 +1623,7 @@ mod tests {
         );
     }
 
-    /// Others search text includes the source label so `ssh` filters to ssh rows.
+    /// All search text includes the source label so `ssh` filters to ssh rows.
     #[test]
     fn test_other_search_text_includes_source_label() {
         let others = others_map();

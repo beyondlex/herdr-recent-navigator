@@ -493,13 +493,13 @@ fn fetch_cwd_map() -> Result<HashMap<String, String>> {
         .collect())
 }
 
-/// Refresh the lazy "Others" state (cwd / command / ssh target) for non-agent
+/// Refresh the lazy "All" state (cwd / command / ssh target) for non-agent
 /// panes. `map` is mutated in place and may be pre-seeded (e.g. from a prior
 /// refresh) — existing command/ssh values are preserved to avoid re-polling.
 ///
 /// Cost: one bulk `pane list` + one `pane process-info` per pane without a
 /// cached command. Callers run this in a background thread, only while the
-/// Others tab is active.
+/// All tab is active.
 pub fn refresh_others(
     nodes: &[NavigationNode],
     map: &mut HashMap<String, PaneOthers>,
