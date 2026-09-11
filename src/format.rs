@@ -36,6 +36,33 @@ pub fn truncate_to(s: &str, max_width: usize) -> String {
     result
 }
 
+/// Truncate a string to the given max display width keeping the TAIL,
+/// prefixing '…' when truncation occurs. Suits file paths, where the
+/// basename and trailing directories matter more than the leading ones.
+pub fn truncate_front(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(s) <= max_width {
+        return s.to_string();
+    }
+    let budget = max_width - 1; // room for the leading '…'
+    let mut kept: Vec<char> = Vec::new();
+    let mut w = 0;
+    for c in s.chars().rev() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        kept.push(c);
+        w += cw;
+    }
+    let mut result = String::with_capacity(kept.len() + 3);
+    result.push('…');
+    result.extend(kept.into_iter().rev());
+    result
+}
+
 // ── Search highlighting ──
 
 /// Build a list of styled spans, marking characters matching `query`
@@ -82,6 +109,7 @@ pub fn tab_label(tab: &CategoryTab, narrow: bool) -> &'static str {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Panes => "Panes",
             CategoryTab::Agents => "Agents",
+            CategoryTab::All => "All",
         }
     } else {
         tab.label()
@@ -144,6 +172,37 @@ mod tests {
     #[test]
     fn test_truncate_to_zero_max() {
         assert_eq!(truncate_to("hello", 0), "");
+    }
+
+    // ── truncate_front tests ──
+
+    #[test]
+    fn test_truncate_front_short_string() {
+        assert_eq!(truncate_front("a/b/c.rs", 10), "a/b/c.rs");
+    }
+
+    #[test]
+    fn test_truncate_front_keeps_tail() {
+        let result = truncate_front("/very/deep/path/to/abc.mdx:328", 12);
+        assert!(result.starts_with('…'), "front marker: {result}");
+        assert!(result.ends_with("abc.mdx:328"), "tail kept: {result}");
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 12);
+    }
+
+    #[test]
+    fn test_truncate_front_respects_unicode_width() {
+        // CJK chars are width 2: keep only what fits after the '…'.
+        let result = truncate_front("目录很长的路径/文件.md", 7);
+        assert!(result.starts_with('…'));
+        assert!(UnicodeWidthStr::width(result.as_str()) <= 7);
+        // The tail must be a suffix of the original.
+        assert!("目录很长的路径/文件.md".ends_with(&result[3..]));
+    }
+
+    #[test]
+    fn test_truncate_front_tiny_widths() {
+        assert_eq!(truncate_front("abc.rs", 1), "…");
+        assert_eq!(truncate_front("abc.rs", 0), "");
     }
 
     // ── highlight_text tests ──
@@ -210,6 +269,12 @@ mod tests {
     fn test_tab_label_agents() {
         assert_eq!(tab_label(&CategoryTab::Agents, false), "Agents");
         assert_eq!(tab_label(&CategoryTab::Agents, true), "Agents");
+    }
+
+    #[test]
+    fn test_tab_label_all() {
+        assert_eq!(tab_label(&CategoryTab::All, false), "All");
+        assert_eq!(tab_label(&CategoryTab::All, true), "All");
     }
 
     // ── min_terminal_size tests ──

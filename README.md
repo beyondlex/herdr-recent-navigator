@@ -220,6 +220,23 @@ Ctrl-based combinations when possible.
 | `force_quit` | `C-c` | Close without focusing |
 | `backspace` | `Backspace` | Delete last search character |
 
+### Tab order and visibility
+
+The order of the top-level category tabs — and which tabs appear at all — is
+configured with a single array in `herdr-plugin.toml`: position is display
+order, and a tab left out of the list is hidden entirely.
+
+```toml
+[navigator]
+tabs = ["workspaces", "tabs", "panes", "agents", "all"]
+```
+
+- Valid names: `workspaces`, `tabs`, `panes`, `agents`, `all`
+- Unknown names are ignored; duplicates collapse to the first occurrence
+- At least one tab is always kept — an empty (or all-invalid) list falls back
+  to `all` only
+- `others` is accepted as a legacy alias for `all`
+
 ## Usage
 
 | Key (default) | Action |
@@ -240,6 +257,15 @@ to customize.
 - **Tabs**: MRU tabs within those workspaces
 - **Agents**: AI agents sorted by last activity
 - **Panes**: Individual terminal panes
+- **All**: find panes by runtime state — ssh target, foreground command,
+  cwd — and by buffer content: any query also substring-matches pane
+  scrollback and shows a one-line excerpt around each hit. A filter prefix
+  narrows the search to one source and shows as a badge next to the input:
+  type `cmd `, `ssh `, `cwd `, `file `, or `term ` (label + space), or `.`
+  for buffer content only (`.` shorthand: `.file` = file buffers only).
+  `ws `, `tab ` and `pane ` swap the list to the workspace, tab or pane
+  list — type a name to fuzzy-filter down to it (e.g. `ws auth` = workspaces
+  matching "auth", `pane nvim` = panes matching "nvim").
 
 
 ## License

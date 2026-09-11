@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -39,47 +40,154 @@ pub struct NavigationNode {
     pub last_accessed_at: u64,
 }
 
+/// The source kind of an "All" row: which runtime state dimension a pane
+/// record represents. Not identity — `cmd`/`ssh`/`cwd`/`file` describe what
+/// the pane is doing/where it is/what it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OtherSource {
+    /// Among the running foreground command (detail = the command line).
+    Cmd,
+    /// Active ssh/mosh login target (detail = `user@host` or `host:port`).
+    Ssh,
+    /// Terminal/command-output buffer match (detail = a one-line excerpt
+    /// around the hit). The pane is NOT editing a file.
+    Terminal,
+    /// Editor buffer match (detail = a one-line excerpt around the hit).
+    /// The pane's foreground is an editor, so the excerpt is file content.
+    File,
+    /// The pane's current directory.
+    Cwd,
+}
+
+impl OtherSource {
+    /// All variants, in display-priority order.
+    pub const ALL: [OtherSource; 5] = [
+        OtherSource::Ssh,
+        OtherSource::Cmd,
+        OtherSource::Terminal,
+        OtherSource::File,
+        OtherSource::Cwd,
+    ];
+
+    /// Short label shown in the Type column / searchable text.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OtherSource::Cmd => "cmd",
+            OtherSource::Ssh => "ssh",
+            OtherSource::Terminal => "term",
+            OtherSource::File => "file",
+            OtherSource::Cwd => "cwd",
+        }
+    }
+
+    /// Ordering priority within a pane's records (lower sorts first).
+    pub fn priority(&self) -> u8 {
+        match self {
+            OtherSource::Ssh => 0,
+            OtherSource::Cmd => 1,
+            OtherSource::Terminal => 2,
+            OtherSource::File => 3,
+            OtherSource::Cwd => 4,
+        }
+    }
+}
+
+/// A narrowed-search filter for the All tab, parsed off the query prefix
+/// and shown as a badge next to the input (`cmd `, `ws `, `.`, …).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum OthersFilter {
+    /// Leading `.` — buffer content rows only (file + term).
+    Content,
+    /// `<label> ` prefix — rows of that source only.
+    Source(OtherSource),
+    /// Leading `ws ` — the workspace list, filtered by the remaining text.
+    Workspace,
+    /// Leading `tab ` — the tab list, filtered by the remaining text.
+    Tab,
+    /// Leading `pane ` — the pane list, filtered by the remaining text.
+    Pane,
+}
+
+impl OthersFilter {
+    /// Split a leading filter off `query`, returning it with the remaining
+    /// text. A filter activates only when its exact label is followed by a
+    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `ws `, `tab `,
+    /// `pane `) — a bare label stays ordinary search text.
+    pub fn parse(query: &str) -> (Option<Self>, &str) {
+        let (base, rest) = match query.strip_prefix('.') {
+            Some(r) => (Some(OthersFilter::Content), r),
+            None => (None, query),
+        };
+        for src in OtherSource::ALL {
+            if let Some(tail) = rest.strip_prefix(src.label())
+                && let Some(needle) = tail.strip_prefix(' ')
+            {
+                return (Some(OthersFilter::Source(src)), needle);
+            }
+        }
+        for (label, f) in [
+            ("ws", OthersFilter::Workspace),
+            ("tab", OthersFilter::Tab),
+            ("pane", OthersFilter::Pane),
+        ] {
+            if let Some(tail) = rest.strip_prefix(label)
+                && let Some(needle) = tail.strip_prefix(' ')
+            {
+                return (Some(f), needle);
+            }
+        }
+        (base, rest)
+    }
+
+    /// Short label shown in the badge next to the input.
+    pub fn label(&self) -> &'static str {
+        match self {
+            OthersFilter::Content => "content",
+            OthersFilter::Source(src) => src.label(),
+            OthersFilter::Workspace => "ws",
+            OthersFilter::Tab => "tab",
+            OthersFilter::Pane => "pane",
+        }
+    }
+}
+
+/// Lazily-fetched runtime state for a pane, used by the All tab.
+/// Unlike `NavigationNode` (refreshed every 2s), this is refetched only while
+/// the All tab is active, and only once per pane per refresh window.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneOthers {
+    pub cwd: Option<String>,
+    pub command: Option<String>,
+    pub ssh_target: Option<String>,
+}
+
 /// The category tabs at the top of the navigator UI.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CategoryTab {
     Workspaces,
     Tabs,
     Agents,
     Panes,
+    /// Unified search across everything: pane state (cmd / ssh / cwd) and
+    /// pane-buffer content in one list; a leading `.` narrows to buffer
+    /// content only, `ws `/`tab `/`pane ` swap to that dimension's list.
+    /// Excludes agent panes.
+    All,
 }
 
 impl CategoryTab {
     /// Number of variants, for cycling.
-    pub const COUNT: usize = 4;
+    pub const COUNT: usize = 5;
 
-    /// Return all variants in order.
+    /// Return all variants in the default order.
     pub fn all() -> [CategoryTab; Self::COUNT] {
         [
             CategoryTab::Workspaces,
             CategoryTab::Tabs,
             CategoryTab::Panes,
             CategoryTab::Agents,
+            CategoryTab::All,
         ]
-    }
-
-    /// Move to the next tab (wrapping).
-    pub fn next(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Tabs,
-            CategoryTab::Tabs => CategoryTab::Panes,
-            CategoryTab::Panes => CategoryTab::Agents,
-            CategoryTab::Agents => CategoryTab::Workspaces,
-        }
-    }
-
-    /// Move to the previous tab (wrapping).
-    pub fn previous(&self) -> Self {
-        match self {
-            CategoryTab::Workspaces => CategoryTab::Agents,
-            CategoryTab::Tabs => CategoryTab::Workspaces,
-            CategoryTab::Panes => CategoryTab::Tabs,
-            CategoryTab::Agents => CategoryTab::Panes,
-        }
     }
 
     /// Display label for the tab.
@@ -89,7 +197,29 @@ impl CategoryTab {
             CategoryTab::Tabs => "Tabs",
             CategoryTab::Agents => "Agents",
             CategoryTab::Panes => "Panes",
+            CategoryTab::All => "All",
         }
+    }
+}
+
+/// Parse the configured tab list. The array carries both order and
+/// visibility: position is display order, membership is shown-at-all.
+/// Unknown labels are ignored and duplicates deduped (first wins); an empty
+/// or all-invalid list degrades to `["all"]` — the navigator must always
+/// show at least one tab.
+pub fn parse_tabs(spec: &[String]) -> Vec<CategoryTab> {
+    let mut tabs: Vec<CategoryTab> = Vec::new();
+    for s in spec {
+        if let Ok(t) = s.trim().parse::<CategoryTab>()
+            && !tabs.contains(&t)
+        {
+            tabs.push(t);
+        }
+    }
+    if tabs.is_empty() {
+        vec![CategoryTab::All]
+    } else {
+        tabs
     }
 }
 
@@ -129,6 +259,21 @@ pub enum DisplayItem {
         status: AgentStatus,
         last_accessed_at: u64,
     },
+    Other {
+        pane_id: String,
+        pane_name: String,
+        tab: String,
+        workspace: String,
+        source: OtherSource,
+        /// The matched/runtime value: command line, ssh target, cwd path,
+        /// or a content-search excerpt.
+        detail: String,
+        /// Where the record lives, shown in the Context column: the edited
+        /// file path (`file`), the pane's cwd (`cmd`), the connected host
+        /// (`ssh`), or `-` when not applicable (`cwd`/`term`).
+        context: String,
+        last_accessed_at: u64,
+    },
 }
 
 impl DisplayItem {
@@ -141,6 +286,9 @@ impl DisplayItem {
             } => format!("{}:{}", workspace, name),
             DisplayItem::Agent { agent_id, .. } => agent_id.clone(),
             DisplayItem::Pane { pane_name, .. } => pane_name.clone(),
+            DisplayItem::Other {
+                pane_name, source, ..
+            } => format!("{}{}", source.priority(), pane_name),
         }
     }
 
@@ -170,6 +318,23 @@ impl DisplayItem {
                     tab,
                     workspace,
                     agent_id.as_deref().unwrap_or("")
+                )
+            }
+            DisplayItem::Other {
+                pane_name,
+                tab,
+                workspace,
+                source,
+                detail,
+                ..
+            } => {
+                format!(
+                    "{} {} {} {} {}",
+                    source.label(),
+                    detail,
+                    pane_name,
+                    tab,
+                    workspace
                 )
             }
         }
@@ -361,6 +526,9 @@ pub struct AppState {
     pub nodes: Vec<NavigationNode>,
     /// Currently selected category tab.
     pub current_category: CategoryTab,
+    /// Configured category tabs — display order and visibility combined
+    /// (parsed from `[navigator] tabs`). Always non-empty.
+    pub tabs: Vec<CategoryTab>,
     /// Search input text.
     pub search_query: String,
     /// Currently highlighted list index.
@@ -376,6 +544,10 @@ pub struct AppState {
     pub cached_displayed: Rc<Vec<DisplayItem>>,
     /// Total items before search filtering; shown in the status bar count.
     pub cached_total: usize,
+    /// Lazily-fetched pane runtime state for the All tab (cmd/ssh/cwd).
+    pub others: HashMap<String, PaneOthers>,
+    /// Cached ANSI-stripped pane buffers backing the All tab's content rows.
+    pub contents: HashMap<String, String>,
 }
 
 fn state_file_path() -> PathBuf {
@@ -422,6 +594,9 @@ impl std::str::FromStr for CategoryTab {
             "tabs" => Ok(CategoryTab::Tabs),
             "agents" => Ok(CategoryTab::Agents),
             "panes" => Ok(CategoryTab::Panes),
+            "all" => Ok(CategoryTab::All),
+            // Legacy name accepted so existing configs/CLI keep working.
+            "others" => Ok(CategoryTab::All),
             _ => Err(format!("Unknown category tab: {s}")),
         }
     }
@@ -458,13 +633,178 @@ mod category_tab_tests {
     }
 
     #[test]
+    fn test_category_tab_from_str_all() {
+        assert_eq!("all".parse::<CategoryTab>().unwrap(), CategoryTab::All);
+        // Legacy name still maps to the All tab.
+        assert_eq!("others".parse::<CategoryTab>().unwrap(), CategoryTab::All);
+    }
+
+    #[test]
     fn test_category_tab_from_str_invalid() {
         assert!("invalid".parse::<CategoryTab>().is_err());
     }
 
     #[test]
+    fn test_parse_tabs_full_list_is_passthrough() {
+        // (A missing/empty `[navigator]` section never reaches parse_tabs:
+        // the manifest loader substitutes the full default list first.)
+        let all: Vec<String> = CategoryTab::all()
+            .iter()
+            .map(|t| t.label().to_lowercase())
+            .collect();
+        assert_eq!(parse_tabs(&all), CategoryTab::all().to_vec());
+    }
+
+    #[test]
+    fn test_parse_tabs_reorders_and_hides() {
+        let spec = vec!["all".to_string(), "workspaces".to_string()];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::All, CategoryTab::Workspaces]
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_dedupes_and_drops_unknown() {
+        let spec = vec![
+            "agents".to_string(),
+            "nope".to_string(),
+            " agents ".to_string(),
+            "all".to_string(),
+        ];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::Agents, CategoryTab::All]
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_accepts_legacy_others_alias() {
+        let spec = vec!["others".to_string(), "workspaces".to_string()];
+        assert_eq!(
+            parse_tabs(&spec),
+            vec![CategoryTab::All, CategoryTab::Workspaces],
+            "legacy `others` token maps to the All tab"
+        );
+    }
+
+    #[test]
+    fn test_parse_tabs_empty_or_all_invalid_keeps_all() {
+        // Nothing configured to show: the navigator must keep one tab.
+        assert_eq!(parse_tabs(&[]), vec![CategoryTab::All]);
+        assert_eq!(parse_tabs(&["nope".to_string()]), vec![CategoryTab::All]);
+    }
+
+    // ── OthersFilter::parse ──
+
+    #[test]
+    fn test_others_filter_label_plus_space_activates() {
+        assert_eq!(
+            OthersFilter::parse("cmd deploy"),
+            (Some(OthersFilter::Source(OtherSource::Cmd)), "deploy")
+        );
+        assert_eq!(
+            OthersFilter::parse("ssh "),
+            (Some(OthersFilter::Source(OtherSource::Ssh)), "")
+        );
+        assert_eq!(
+            OthersFilter::parse("cwd /var/log"),
+            (Some(OthersFilter::Source(OtherSource::Cwd)), "/var/log")
+        );
+        assert_eq!(
+            OthersFilter::parse("ws auth"),
+            (Some(OthersFilter::Workspace), "auth")
+        );
+        assert_eq!(OthersFilter::parse("tab "), (Some(OthersFilter::Tab), ""));
+        assert_eq!(
+            OthersFilter::parse("tab main"),
+            (Some(OthersFilter::Tab), "main")
+        );
+        assert_eq!(
+            OthersFilter::parse("pane nvim"),
+            (Some(OthersFilter::Pane), "nvim")
+        );
+    }
+
+    #[test]
+    fn test_others_filter_bare_label_stays_search_text() {
+        // No trailing space: the label is ordinary fuzzy text.
+        assert_eq!(OthersFilter::parse("cmd"), (None, "cmd"));
+        assert_eq!(OthersFilter::parse("ws"), (None, "ws"));
+        assert_eq!(OthersFilter::parse("tab"), (None, "tab"));
+        assert_eq!(OthersFilter::parse("pane"), (None, "pane"));
+        // A label-shaped prefix that is not exactly the label is plain text.
+        assert_eq!(OthersFilter::parse("cmdx rest"), (None, "cmdx rest"));
+        assert_eq!(OthersFilter::parse("tabx rest"), (None, "tabx rest"));
+        // A label in the middle of the query never activates a filter.
+        assert_eq!(OthersFilter::parse("deploy cmd"), (None, "deploy cmd"));
+        assert_eq!(OthersFilter::parse("deploy ws"), (None, "deploy ws"));
+    }
+
+    #[test]
+    fn test_others_filter_ws_tab_not_source_aliases() {
+        // `term` is a source label, `tab` is a dimension filter: distinct.
+        assert_eq!(
+            OthersFilter::parse("term "),
+            (Some(OthersFilter::Source(OtherSource::Terminal)), "")
+        );
+        assert_eq!(OthersFilter::parse("tab "), (Some(OthersFilter::Tab), ""));
+        // Source labels still win over ws/tab.
+        assert_eq!(
+            OthersFilter::parse("cmd deploy"),
+            (Some(OthersFilter::Source(OtherSource::Cmd)), "deploy")
+        );
+    }
+
+    #[test]
+    fn test_others_filter_labels() {
+        assert_eq!(OthersFilter::Content.label(), "content");
+        assert_eq!(OthersFilter::Workspace.label(), "ws");
+        assert_eq!(OthersFilter::Tab.label(), "tab");
+        assert_eq!(OthersFilter::Pane.label(), "pane");
+        assert_eq!(
+            OthersFilter::Source(OtherSource::Ssh).label(),
+            OtherSource::Ssh.label()
+        );
+    }
+
+    #[test]
+    fn test_others_filter_dot_and_dot_label_combo() {
+        assert_eq!(
+            OthersFilter::parse(".deploy"),
+            (Some(OthersFilter::Content), "deploy")
+        );
+        // `.file ` narrows past content down to the file source.
+        assert_eq!(
+            OthersFilter::parse(".file todo"),
+            (Some(OthersFilter::Source(OtherSource::File)), "todo")
+        );
+    }
+
+    #[test]
     fn test_category_tab_from_str_case_sensitive() {
         assert!("Workspaces".parse::<CategoryTab>().is_err());
+    }
+}
+
+#[cfg(test)]
+mod other_source_tests {
+    use super::*;
+
+    #[test]
+    fn test_other_source_labels() {
+        assert_eq!(OtherSource::Ssh.label(), "ssh");
+        assert_eq!(OtherSource::Cmd.label(), "cmd");
+        assert_eq!(OtherSource::Cwd.label(), "cwd");
+        assert_eq!(OtherSource::File.label(), "file");
+        assert_eq!(OtherSource::Terminal.label(), "term");
+    }
+
+    #[test]
+    fn test_other_source_priority_order() {
+        assert!(OtherSource::Ssh.priority() < OtherSource::Cmd.priority());
+        assert!(OtherSource::Cmd.priority() < OtherSource::File.priority());
+        assert!(OtherSource::File.priority() < OtherSource::Cwd.priority());
     }
 }
 

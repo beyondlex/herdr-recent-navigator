@@ -1,11 +1,18 @@
-use crate::models::{Action, AppState, KeyAction, Keybindings};
+use crate::models::{Action, AppState, CategoryTab, KeyAction, Keybindings};
 
 impl AppState {
-    pub fn new(nodes: Vec<crate::models::NavigationNode>, keybindings: Keybindings) -> Self {
+    pub fn new(
+        nodes: Vec<crate::models::NavigationNode>,
+        keybindings: Keybindings,
+        tabs: Vec<CategoryTab>,
+    ) -> Self {
         AppState {
             nodes,
             keybindings,
-            current_category: crate::models::CategoryTab::Workspaces,
+            // Start on the first configured tab (run_inner re-applies the
+            // persisted / `--view` category afterwards).
+            current_category: tabs.first().copied().unwrap_or(CategoryTab::Workspaces),
+            tabs,
             search_query: String::new(),
             selected_index: 0,
             spinner_tick: 0,
@@ -13,7 +20,25 @@ impl AppState {
             cache_key: None,
             cached_displayed: std::rc::Rc::new(Vec::new()),
             cached_total: 0,
+            others: std::collections::HashMap::new(),
+            contents: std::collections::HashMap::new(),
         }
+    }
+
+    /// Step to the next (`step` = 1) or previous (`step` = -1) configured tab,
+    /// wrapping. Hidden tabs are skipped; a current tab outside the configured
+    /// list (e.g. persisted from an older config) falls back to the first.
+    fn cycle_category(&mut self, step: isize) {
+        let len = self.tabs.len();
+        if len == 0 {
+            return;
+        }
+        let idx = self
+            .tabs
+            .iter()
+            .position(|t| *t == self.current_category)
+            .unwrap_or(0);
+        self.current_category = self.tabs[(idx as isize + step).rem_euclid(len as isize) as usize];
     }
 
     /// Process a crossterm key event. `list_len` is the length of the filtered
@@ -34,12 +59,12 @@ impl AppState {
             Some(Action::ForceQuit) => KeyAction::ExitDismiss,
             Some(Action::Select) => KeyAction::ExitSelect,
             Some(Action::NextCategory) => {
-                self.current_category = self.current_category.next();
+                self.cycle_category(1);
                 self.selected_index = 0;
                 KeyAction::Continue
             }
             Some(Action::PreviousCategory) => {
-                self.current_category = self.current_category.previous();
+                self.cycle_category(-1);
                 self.selected_index = 0;
                 KeyAction::Continue
             }
@@ -109,7 +134,11 @@ mod tests {
     }
 
     fn make_state() -> AppState {
-        AppState::new(mock_nodes(), Keybindings::default())
+        AppState::new(
+            mock_nodes(),
+            Keybindings::default(),
+            CategoryTab::all().to_vec(),
+        )
     }
 
     /// Test E: Tab cycles categories correctly
@@ -129,6 +158,9 @@ mod tests {
         assert_eq!(state.current_category, CategoryTab::Agents);
 
         state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::All);
+
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
         assert_eq!(state.current_category, CategoryTab::Workspaces);
     }
 
@@ -138,10 +170,43 @@ mod tests {
         let mut state = make_state();
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Agents);
+        assert_eq!(state.current_category, CategoryTab::All);
 
         state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
-        assert_eq!(state.current_category, CategoryTab::Panes);
+        assert_eq!(state.current_category, CategoryTab::Agents);
+    }
+
+    /// With a custom tab list, cycling follows the configured order and
+    /// never lands on a hidden tab.
+    #[test]
+    fn test_custom_tabs_cycle_and_skip_hidden() {
+        let mut state = AppState::new(
+            mock_nodes(),
+            Keybindings::default(),
+            vec![CategoryTab::All, CategoryTab::Workspaces],
+        );
+        // Starts on the first configured tab, not the global default.
+        assert_eq!(state.current_category, CategoryTab::All);
+
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+        // Wraps within the configured list — Panes/Tabs/Agents are skipped.
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::All);
+        state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+    }
+
+    /// A single configured tab cycles to itself; a current category outside
+    /// the configured list falls back into it instead of getting stuck.
+    #[test]
+    fn test_single_tab_and_out_of_list_current() {
+        let mut state = AppState::new(mock_nodes(), Keybindings::default(), vec![CategoryTab::All]);
+        state.current_category = CategoryTab::Panes; // e.g. persisted earlier
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::All);
+        state.handle_key(make_key(KeyCode::BackTab, KeyModifiers::SHIFT), 10);
+        assert_eq!(state.current_category, CategoryTab::All);
     }
 
     /// Number keys should append to search query (not quick-select)

@@ -1,5 +1,7 @@
 use crate::format::*;
-use crate::models::{AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings};
+use crate::models::{
+    AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -196,12 +198,34 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(chunks[2]);
-    render_column_header(frame, &state.current_category, list_chunks[0], &p, narrow);
+    // In the All tab a `ws `/`tab `/`pane ` filter swaps the list to
+    // workspace/tab/pane entities, so the column header should match that
+    // dimension's layout.
+    let header_category = if state.current_category == CategoryTab::All {
+        match OthersFilter::parse(&state.search_query).0 {
+            Some(OthersFilter::Workspace) => CategoryTab::Workspaces,
+            Some(OthersFilter::Tab) => CategoryTab::Tabs,
+            Some(OthersFilter::Pane) => CategoryTab::Panes,
+            _ => CategoryTab::All,
+        }
+    } else {
+        state.current_category
+    };
+    render_column_header(frame, &header_category, list_chunks[0], &p, narrow);
+    // With a filter prefix (`.` / `cmd ` / …) the All rows are keyed by
+    // the remaining text (their `detail` carries the excerpt or the matched
+    // value), so highlight with that — matching the raw query against them
+    // would find nothing.
+    let highlight_query = if state.current_category == CategoryTab::All {
+        OthersFilter::parse(&state.search_query).1
+    } else {
+        state.search_query.as_str()
+    };
     render_list(
         frame,
         displayed,
         state.selected_index,
-        state.search_query.as_str(),
+        highlight_query,
         state.spinner_tick,
         list_chunks[1],
         &p,
@@ -212,7 +236,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
 // ── Sub-renderers ───────────────────────────────────────────────────────────
 
 fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, narrow: bool) {
-    let tabs = CategoryTab::all();
+    let tabs = &state.tabs;
     let sel_idx = tabs
         .iter()
         .position(|t| t == &state.current_category)
@@ -261,12 +285,15 @@ fn render_search(
     p: &Palette,
 ) {
     let prefix = " > ";
-    let is_empty = state.search_query.is_empty();
-    let text = if is_empty {
-        "type to filter..."
+    // In the All tab a filter prefix (`cmd `, `.`, …) is lifted out of the
+    // query and shown as a badge chip; the rest is the live search text.
+    let (filter, rest) = if state.current_category == CategoryTab::All {
+        OthersFilter::parse(&state.search_query)
     } else {
-        &state.search_query
+        (None, state.search_query.as_str())
     };
+    let is_empty = rest.is_empty();
+    let text = if is_empty { "type to filter..." } else { rest };
     let count_str = if is_empty {
         format!("{}", total)
     } else {
@@ -278,19 +305,25 @@ fn render_search(
     } else {
         Style::default().fg(p.text)
     };
+    let badge_w = match filter {
+        Some(f) => f.label().len() + 4, // chip padding (" x ") + separator space
+        None => 0,
+    };
     let padding_right = 2;
-    let line = Line::from(vec![
-        Span::styled(format!("{}{}", prefix, text), text_style),
-        Span::styled(
-            " ".repeat(area.width.saturating_sub(
-                (prefix.len() + text.len() + count_str.len() + padding_right) as u16,
-            ) as usize),
-            Style::default(),
-        ),
-        Span::styled(count_str, Style::default().fg(p.overlay0)),
-    ]);
+    let pad = area.width.saturating_sub(
+        (prefix.len() + badge_w + text.len() + count_str.len() + padding_right) as u16,
+    ) as usize;
+
+    let mut spans = vec![Span::styled(prefix, text_style)];
+    if let Some(f) = filter {
+        spans.push(filter_chip(f, p));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(text.to_string(), text_style));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(count_str, Style::default().fg(p.overlay0)));
     frame.render_widget(
-        Paragraph::new(line)
+        Paragraph::new(Line::from(spans))
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
@@ -299,6 +332,24 @@ fn render_search(
             .style(Style::default().fg(p.text)),
         area,
     );
+}
+
+/// Colored chip shown left of the input while an All filter is active.
+fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
+    let color = match f {
+        OthersFilter::Content => p.accent,
+        OthersFilter::Source(src) => source_color(&src, p),
+        OthersFilter::Workspace => p.peach,
+        OthersFilter::Tab => p.red,
+        OthersFilter::Pane => p.blue,
+    };
+    Span::styled(
+        format!(" {} ", f.label()),
+        Style::default()
+            .fg(p.surface_dim)
+            .bg(color)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 fn render_column_header(
@@ -317,6 +368,11 @@ fn render_column_header(
         CategoryTab::Tabs => (&["Tab", "Workspace", "Agent"], 1, &col_layout::TAB),
         CategoryTab::Agents => (&["Agent", "Tab", "Workspace"], 2, &col_layout::AGENT),
         CategoryTab::Workspaces => (&["Workspace", "Agent"], 1, &col_layout::WORKSPACE),
+        CategoryTab::All => (
+            &["Type", "Detail", "Context", "Tab", "Workspace"],
+            1,
+            &col_layout::OTHER,
+        ),
     };
     let cols = Layout::horizontal(constraints)
         .flex(Flex::Start)
@@ -402,15 +458,23 @@ fn render_list(
                     workspace,
                     ..
                 } => row_agent(i, agent_id, status, tab, workspace, &row_ctx),
-                DisplayItem::Pane {
-                    pane_name,
-                    workspace,
-                    tab,
-                    agent_id,
-                    status,
-                    ..
-                } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
-            }
+DisplayItem::Pane {
+                pane_name,
+                workspace,
+                tab,
+                agent_id,
+                status,
+                ..
+            } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
+            DisplayItem::Other {
+                source,
+                detail,
+                context,
+                tab,
+                workspace,
+                ..
+            } => row_other(i, source, detail, context, tab, workspace, &row_ctx),
+        }
         })
         .collect();
     let visible_rows = area.height as usize;
@@ -506,6 +570,9 @@ fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool, k
 /// Build styled spans for a single flex column.
 /// Truncates text to `width`, applies search highlighting,
 /// pads right (left-align) or left (right-align).
+///
+/// Left-aligned columns reserve their last char as a gutter, so a column
+/// whose content fills the whole allocation never touches the next one.
 fn flex_col(
     text: &str,
     width: usize,
@@ -517,16 +584,24 @@ fn flex_col(
     if width == 0 {
         return vec![];
     }
-    let display = truncate_to(text, width);
+    let (content_w, gutter) = if align_right {
+        (width, 0)
+    } else {
+        (width.saturating_sub(1), 1)
+    };
+    let display = truncate_to(text, content_w);
     let mut spans = highlight_text(&display, query, base_style, hl_style);
-    let content_w = UnicodeWidthStr::width(display.as_str());
-    let pad = width.saturating_sub(content_w);
+    let display_w = UnicodeWidthStr::width(display.as_str());
+    let pad = content_w.saturating_sub(display_w);
     if pad > 0 {
         if align_right {
             spans.insert(0, Span::raw(" ".repeat(pad)));
         } else {
             spans.push(Span::raw(" ".repeat(pad)));
         }
+    }
+    if gutter > 0 {
+        spans.push(Span::raw(" ".repeat(gutter)));
     }
     spans
 }
@@ -560,6 +635,14 @@ mod col_layout {
         Constraint::Percentage(36),
     ];
     pub const WORKSPACE: [Constraint; 3] = [IDX, Constraint::Fill(1), DOTS];
+    pub const OTHER: [Constraint; 6] = [
+        IDX,
+        Constraint::Length(6),
+        Constraint::Percentage(26),
+        Constraint::Percentage(26),
+        Constraint::Percentage(16),
+        Constraint::Percentage(24),
+    ];
 }
 
 fn col_spans(text: &str, col: &Rect, query: &str, base: Style, hl: Style) -> Vec<Span<'static>> {
@@ -705,7 +788,65 @@ fn row_pane(
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
 
-// ── Mobile / responsive helpers & layout — now in crate::format ──
+/// Per-source color so the Type column is scannable at a glance.
+fn source_color(source: &OtherSource, p: &Palette) -> Color {
+    match source {
+        OtherSource::Ssh => p.teal,
+        OtherSource::Cmd => p.yellow,
+        OtherSource::File => p.mauve,
+        OtherSource::Terminal => p.blue,
+        OtherSource::Cwd => p.green,
+    }
+}
+
+fn source_style(source: &OtherSource, p: &Palette) -> Style {
+    Style::default()
+        .fg(source_color(source, p))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn row_other(
+    i: usize,
+    source: &OtherSource,
+    detail: &str,
+    context: &str,
+    tab: &str,
+    ws: &str,
+    ctx: &RowCtx,
+) -> ListItem<'static> {
+    let cs = ctx_style(ctx.sel, ctx.p);
+    let hl = hl_style(ctx.sel, ctx.p);
+    let ns = name_style(ctx.sel, ctx.p);
+
+    let rw = ctx.rw as u16;
+    let cols = Layout::horizontal(col_layout::OTHER)
+        .flex(Flex::Start)
+        .split(Rect::new(0, 0, rw, 1));
+
+    let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
+
+    // Type column (fixed width, right-side type reads like a tag).
+    let type_col_w = cols[1].width as usize;
+    let type_text = source.label();
+    let tw = UnicodeWidthStr::width(type_text);
+    let pad = type_col_w.saturating_sub(tw + 1) + 1; // 1-char gutter
+    sp.push(Span::styled(type_text.to_string(), source_style(source, ctx.p)));
+    sp.push(Span::raw(" ".repeat(pad)));
+
+    sp.extend(col_spans(detail, &cols[2], ctx.query, ns, hl));
+    // Context (file path etc.): front-truncate so the tail — basename and
+    // `:line` — stays visible; `-` ("no context") sits dimmer.
+    if context == "-" {
+        let dim = Style::default().fg(if ctx.sel { ctx.p.text } else { ctx.p.overlay1 });
+        sp.extend(col_spans(context, &cols[3], "", dim, hl));
+    } else {
+        let display = truncate_front(context, cols[3].width.saturating_sub(1) as usize);
+        sp.extend(col_spans(&display, &cols[3], ctx.query, cs, hl));
+    }
+    sp.extend(col_spans(tab, &cols[4], ctx.query, cs, hl));
+    sp.extend(col_spans(ws, &cols[5], ctx.query, cs, hl));
+    ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
+}
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
 // are imported via `use crate::format::*;` at the top of this file.
 

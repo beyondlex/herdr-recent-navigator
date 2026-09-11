@@ -5,6 +5,7 @@ mod format;
 mod ipc;
 mod models;
 mod mru;
+mod others;
 mod tracker;
 mod ui;
 
@@ -30,7 +31,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use cli::{Cli, Command as CliCommand};
-use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings};
+use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings, parse_tabs};
 
 type RunInnerResult = Result<(
     AppState,
@@ -93,7 +94,8 @@ fn main() -> Result<()> {
         if let Some(view) = &cli.view {
             // Use a dummy AppState to write the category to state.json
             if let Ok(cat) = view.parse::<CategoryTab>() {
-                let state = AppState::new(vec![], Keybindings::default());
+                let state =
+                    AppState::new(vec![], Keybindings::default(), CategoryTab::all().to_vec());
                 state.save_category(&cat);
             }
         }
@@ -241,7 +243,7 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         focused_pane_info.as_ref().map(|f| f.pane_id.clone()),
     );
 
-    let mut state = AppState::new(nodes, load_manifest_keybindings());
+    let mut state = AppState::new(nodes, load_manifest_keybindings(), load_manifest_tabs());
     state.theme_name = ctx.theme_name.clone();
 
     // Fallback 1: read the active theme from Herdr's own config, which is where
@@ -262,6 +264,10 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
         && let Ok(cat) = view.parse::<CategoryTab>()
     {
         state.current_category = cat;
+    }
+    // The persisted or `--view` tab may be hidden by the configured tab list.
+    if !state.tabs.contains(&state.current_category) {
+        state.current_category = state.tabs[0];
     }
 
     Ok((state, pane_ts, tab_ts, ws_ts, ctx, connected))
@@ -571,6 +577,19 @@ fn run_event_loop(
     let mut last_refresh = Instant::now();
     let (refresh_tx, refresh_rx) = mpsc::channel();
     let refresh_in_flight = Arc::new(AtomicBool::new(false));
+
+    // Lazy "All" state refresh: cwd + foreground command/ssh, re-fetched
+    // only while the All tab is active (callers pay the process-info cost).
+    let (others_tx, others_rx) = mpsc::channel();
+    let others_in_flight = Arc::new(AtomicBool::new(false));
+    let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
+
+    // Lazy pane-buffer cache for `.`-prefixed content search in the All tab.
+    // Fetched only while a dot query is active; one `pane read` per uncached pane.
+    let (contents_tx, contents_rx) = mpsc::channel();
+    let contents_in_flight = Arc::new(AtomicBool::new(false));
+    let mut contents_last_fetch = Instant::now() - Duration::from_secs(31); // fire immediately
+
     loop {
         // ── Periodic data refresh (non-blocking, background thread) ──
         if connected
@@ -606,6 +625,54 @@ fn run_event_loop(
             state.cache_key = None; // nodes changed, invalidate cache
         }
 
+        // ── Lazy "All" state refresh (cwd / command / ssh) ──
+        if connected
+            && state.current_category == CategoryTab::All
+            && others_last_fetch.elapsed() >= Duration::from_secs(10)
+            && !others_in_flight.load(Ordering::Relaxed)
+        {
+            others_last_fetch = Instant::now();
+            others_in_flight.store(true, Ordering::Relaxed);
+            let nodes = state.nodes.clone();
+            let mut others = state.others.clone();
+            let tx = others_tx.clone();
+            let flag = others_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = crate::ipc::refresh_others(&nodes, &mut others);
+                let _ = tx.send(others);
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(fresh_others) = others_rx.try_recv() {
+            state.others = fresh_others;
+            state.cache_key = None; // others changed, invalidate cache
+        }
+
+        // ── Lazy pane-buffer cache for All content rows ──
+        let all_tab = state.current_category == CategoryTab::All;
+        if connected
+            && all_tab
+            && contents_last_fetch.elapsed() >= Duration::from_secs(30)
+            && !contents_in_flight.load(Ordering::Relaxed)
+        {
+            contents_last_fetch = Instant::now();
+            contents_in_flight.store(true, Ordering::Relaxed);
+            let nodes = state.nodes.clone();
+            let mut contents = state.contents.clone();
+            let self_pane_id = ctx.self_pane_id.clone();
+            let tx = contents_tx.clone();
+            let flag = contents_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = crate::ipc::refresh_contents(&nodes, &mut contents, self_pane_id.as_deref());
+                let _ = tx.send(contents);
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(fresh_contents) = contents_rx.try_recv() {
+            state.contents = fresh_contents;
+            state.cache_key = None; // contents changed, invalidate cache
+        }
+
         // ── Build display list once, shared by render + event handler ──
         let opts = mru::BuildOptions {
             pane_ts,
@@ -615,6 +682,7 @@ fn run_event_loop(
             active_pane_id: ctx.pane_id.as_deref(),
             active_tab_id: ctx.tab_id.as_deref(),
             self_pane_id: ctx.self_pane_id.as_deref(),
+            others: &state.others,
         };
         // Use cache key to skip rebuild when input hasn't changed
         let cache_key = mru::build_cache_key(
@@ -628,12 +696,27 @@ fn run_event_loop(
             (state.cached_displayed.clone(), state.cached_total)
         } else {
             // Cache miss: rebuild
-            let items = mru::build_display_list(&state.nodes, &opts, &state.current_category);
+            let (query, items) = if state.current_category == CategoryTab::All {
+                // State records and buffer content matches in one list; a
+                // leading `.` narrows to buffer content only.
+                mru::build_others_base(
+                    &state.nodes,
+                    &state.contents,
+                    &state.others,
+                    &opts,
+                    &state.search_query,
+                )
+            } else {
+                (
+                    state.search_query.clone(),
+                    mru::build_display_list(&state.nodes, &opts, &state.current_category),
+                )
+            };
             let total = items.len();
-            let displayed = if state.search_query.is_empty() {
+            let displayed = if query.is_empty() {
                 Rc::new(items)
             } else {
-                Rc::new(mru::search_display_items(&items, &state.search_query))
+                Rc::new(mru::search_display_items(&items, &query))
             };
             // Update cache
             state.cache_key = Some(cache_key);
@@ -693,9 +776,9 @@ fn get_selected_target_from_list(
     displayed.get(state.selected_index).map(|item| match item {
         models::DisplayItem::Workspace { id, .. } => FocusTarget::Workspace(id.clone()),
         models::DisplayItem::Tab { tab_id, .. } => FocusTarget::Tab(tab_id.clone()),
-        models::DisplayItem::Agent { pane_id, .. } | models::DisplayItem::Pane { pane_id, .. } => {
-            FocusTarget::Pane(pane_id.clone())
-        }
+        models::DisplayItem::Agent { pane_id, .. }
+        | models::DisplayItem::Pane { pane_id, .. }
+        | models::DisplayItem::Other { pane_id, .. } => FocusTarget::Pane(pane_id.clone()),
     })
 }
 
@@ -860,6 +943,39 @@ fn load_manifest_keybindings() -> Keybindings {
     }
 }
 
+/// Read the configured category tabs from the manifest's `[navigator] tabs` —
+/// one ordered array carrying both display order and visibility (a tab left
+/// out is hidden). A missing section/field means "all tabs, default order";
+/// an explicitly empty or invalid list is normalized by `parse_tabs` down to
+/// just `All`.
+fn load_manifest_tabs() -> Vec<CategoryTab> {
+    let Some(root) = std::env::var("HERDR_PLUGIN_ROOT").ok() else {
+        return CategoryTab::all().to_vec();
+    };
+    let Ok(content) = std::fs::read_to_string(PathBuf::from(root).join("herdr-plugin.toml")) else {
+        return CategoryTab::all().to_vec();
+    };
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return CategoryTab::all().to_vec();
+    };
+    let raw: Vec<String> = value
+        .get("navigator")
+        .and_then(|n| n.get("tabs"))
+        .and_then(|t| t.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            CategoryTab::all()
+                .iter()
+                .map(|t| t.label().to_lowercase())
+                .collect()
+        });
+    parse_tabs(&raw)
+}
+
 /// Extract pane_id from `herdr plugin pane open` JSON response.
 ///
 /// Response shape:
@@ -951,7 +1067,11 @@ mod integration_tests {
     #[test]
     fn test_run_inner_with_mock_data() {
         let cli = Cli::parse_from(["herdr-recent-navigator", "--mock"]);
-        let result = run_inner(&cli);
+        let mut result = None;
+        crate::test_helpers::with_temp_dir(|_| {
+            result = Some(run_inner(&cli));
+        });
+        let result = result.expect("closure ran");
         assert!(result.is_ok(), "run_inner should succeed with --mock");
 
         let (state, pane_ts, tab_ts, ws_ts, ctx, connected) = result.unwrap();
