@@ -166,7 +166,7 @@ herdr plugin config-dir beyondlex.herdr-recent-navigator
 ```
 
 Create `config.toml` there (the installer seeds a commented template if the
-file doesn't exist). Both `theme` and `[keybindings]` go in this one file:
+file doesn't exist). `theme`, `[keybindings]` and `[navigator]` all go in this one file:
 
 ```toml
 theme = "light"
@@ -240,8 +240,11 @@ Ctrl-based combinations when possible.
 ### Tab order and visibility
 
 The order of the top-level category tabs — and which tabs appear at all — is
-configured with a single array in `herdr-plugin.toml`: position is display
-order, and a tab left out of the list is hidden entirely.
+configured with a single array in the plugin's `config.toml` (see
+[Configuration](#configuration)): position is display order, and a tab left
+out of the list is hidden entirely. Like `theme` and `[keybindings]`,
+`herdr-plugin.toml` is only read as a fallback when `config.toml` has no
+`[navigator]` section — the installer regenerates the manifest on upgrade.
 
 ```toml
 [navigator]
