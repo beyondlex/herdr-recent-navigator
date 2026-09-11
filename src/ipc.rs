@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::models::{AgentStatus, NavigationNode, PaneOthers};
+use crate::models::{AgentStatus, NavigationNode, PaneOthers, WORKTREE_SEP};
 
 /// Information about the currently focused pane, captured during
 /// `fetch_all_nodes()` to avoid a redundant subprocess call.
@@ -36,6 +36,44 @@ struct WorkspaceListResult {
 struct WorkspaceInfo {
     workspace_id: String,
     label: String,
+    #[serde(default)]
+    worktree: Option<WorktreeInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorktreeInfo {
+    is_linked_worktree: bool,
+    repo_key: String,
+    repo_name: String,
+}
+
+/// Workspace label as shown in the navigator: a linked git worktree is
+/// prefixed with its main-checkout workspace label (or repo name when that
+/// workspace is absent) so it groups under, and searches with, its repo.
+fn workspace_labels(workspaces: &[WorkspaceInfo]) -> HashMap<String, String> {
+    let main_labels: HashMap<&str, &str> = workspaces
+        .iter()
+        .filter_map(|w| match &w.worktree {
+            Some(t) if !t.is_linked_worktree => Some((t.repo_key.as_str(), w.label.as_str())),
+            _ => None,
+        })
+        .collect();
+    workspaces
+        .iter()
+        .map(|w| {
+            let label = match &w.worktree {
+                Some(t) if t.is_linked_worktree => {
+                    let repo = main_labels
+                        .get(t.repo_key.as_str())
+                        .copied()
+                        .unwrap_or(&t.repo_name);
+                    format!("{repo}{WORKTREE_SEP}{}", w.label)
+                }
+                _ => w.label.clone(),
+            };
+            (w.workspace_id.clone(), label)
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,11 +415,7 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
         .unwrap_or_default();
 
     // ── Build local lookup maps ──
-    let ws_labels: HashMap<String, String> = ws_result
-        .workspaces
-        .iter()
-        .map(|w| (w.workspace_id.clone(), w.label.clone()))
-        .collect();
+    let ws_labels = workspace_labels(&ws_result.workspaces);
 
     let tab_names: HashMap<(String, String), String> = all_tabs
         .into_iter()

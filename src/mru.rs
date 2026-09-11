@@ -9,7 +9,9 @@ use nucleo_matcher::{Config, Matcher};
 // AgentStatus is only used in #[cfg(test)] code (make_node helper and test data).
 // The import is kept here so `use super::*` in tests can access it.
 #[allow(unused_imports)]
-use crate::models::{AgentStatus, CategoryTab, DisplayItem, NavigationNode, PaneOthers};
+use crate::models::{
+    AgentStatus, CategoryTab, DisplayItem, NavigationNode, PaneOthers, WORKTREE_SEP,
+};
 
 thread_local! {
     static FUZZY_MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT));
@@ -182,7 +184,34 @@ fn build_workspace_items(
     }
     let mut items: Vec<DisplayItem> = map.into_values().collect();
     mru_sort(&mut items);
-    items
+    group_worktrees(items)
+}
+
+/// Move each linked-worktree workspace directly under its main-checkout
+/// workspace (matched by label prefix), keeping MRU order otherwise.
+fn group_worktrees(items: Vec<DisplayItem>) -> Vec<DisplayItem> {
+    let names: Vec<String> = items.iter().map(|it| it.sort_key()).collect();
+    let parent_of = |i: usize| {
+        names[i]
+            .split_once(WORKTREE_SEP)
+            .map(|(p, _)| p)
+            .filter(|p| names.iter().any(|n| n == p))
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        if parent_of(i).is_some() {
+            continue;
+        }
+        out.push(item.clone());
+        out.extend(
+            items
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| parent_of(*j) == Some(names[i].as_str()))
+                .map(|(_, child)| child.clone()),
+        );
+    }
+    out
 }
 
 fn build_tab_items(
@@ -882,6 +911,39 @@ mod tests {
         } else {
             panic!("Expected Workspace item");
         }
+    }
+
+    /// Linked worktrees sort directly under their main-checkout workspace.
+    #[test]
+    fn test_worktrees_group_under_main_workspace() {
+        let ws = |id: &str, name: &str, ts| make_node(id, id, name, "t", AgentStatus::None, ts, None);
+        let nodes = vec![
+            ws("ws-wt", "shed ⎇ feat", 30),
+            ws("ws-other", "notes", 20),
+            ws("ws-main", "shed", 10),
+            ws("ws-orphan", "lib ⎇ fix", 5),
+        ];
+        let ws_ts: HashMap<String, u64> = nodes
+            .iter()
+            .map(|n| (n.workspace_id.clone(), n.last_accessed_at))
+            .collect();
+        let empty = HashMap::new();
+        let empty_others = HashMap::new();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &ws_ts,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &empty_others,
+        };
+        let names: Vec<String> = build_display_list(&nodes, &opts, &CategoryTab::Workspaces)
+            .iter()
+            .map(|it| it.sort_key())
+            .collect();
+        assert_eq!(names, ["notes", "shed", "shed ⎇ feat", "lib ⎇ fix"]);
     }
 
     /// Agents tab: only nodes with agent_id
