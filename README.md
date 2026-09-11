@@ -18,6 +18,12 @@ navigable by keyboard.
 <p align="center">
   <img alt="demo" src="https://github.com/beyondlex/images/blob/main/recent-navigator.gif" width="559px" />
 </p>
+<p>
+  <img alt="cmd" src="https://github.com/beyondlex/images/blob/main/recent_navigator_cmd.png" />
+</p>
+<p>
+  <img alt="cmd" src="https://github.com/beyondlex/images/blob/main/recent-navigator-content.png" />
+</p>
 
 ## Features
 
