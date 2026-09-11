@@ -1,6 +1,7 @@
 use crate::format::*;
 use crate::models::{
     AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
+    WORKTREE_SEP,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
@@ -669,7 +670,17 @@ fn row_workspace(i: usize, name: &str, a: &[AgentStatus], ctx: &RowCtx) -> ListI
         .split(Rect::new(0, 0, rw, 1));
 
     let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
-    sp.extend(col_spans(name, &cols[1], ctx.query, ns, hl));
+    match name.split_once(WORKTREE_SEP) {
+        Some((repo, wt)) => {
+            let total = cols[1].width as usize;
+            let repo_w = (UnicodeWidthStr::width(repo) + 1).min(total);
+            sp.extend(flex_col(repo, repo_w, ctx.query, ns, hl, false));
+            let wt = format!("{}{}", WORKTREE_SEP.trim_start(), wt);
+            let ws = ctx_style(ctx.sel, ctx.p);
+            sp.extend(flex_col(&wt, total - repo_w, ctx.query, ws, hl, false));
+        }
+        None => sp.extend(col_spans(name, &cols[1], ctx.query, ns, hl)),
+    }
     let dots_w = a.len() * 2;
     let dots_col_w = cols[2].width as usize;
     let pad = dots_col_w.saturating_sub(dots_w);

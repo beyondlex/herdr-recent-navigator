@@ -25,6 +25,9 @@ impl AgentStatus {
     }
 }
 
+/// Separates a linked worktree's repo/main-workspace label from its own label.
+pub const WORKTREE_SEP: &str = " ⎇ ";
+
 /// A composite navigation node representing a pane with its workspace/tab/agent context.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NavigationNode {

@@ -270,7 +270,9 @@ to customize.
 
 ### Category tabs
 
-- **Workspaces**: MRU workspaces with dot indicators for agent status
+- **Workspaces**: MRU workspaces with dot indicators for agent status.
+  Linked git worktrees show as `<repo> ⎇ <worktree>` directly under their
+  main-checkout workspace, and typing the repo name finds them
 - **Tabs**: MRU tabs within those workspaces
 - **Agents**: AI agents sorted by last activity
 - **Panes**: Individual terminal panes
