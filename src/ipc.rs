@@ -127,6 +127,18 @@ struct ForegroundProcess {
 }
 
 #[derive(Debug, Deserialize)]
+struct AgentListResult {
+    agents: Vec<AgentListInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentListInfo {
+    pane_id: String,
+    #[serde(default)]
+    state_change_seq: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct TabListResult {
     tabs: Vec<TabInfo>,
 }
@@ -234,6 +246,7 @@ fn args_to_method(args: &[&str]) -> Option<(&'static str, serde_json::Value)> {
         ["workspace", "list"] => Some(("workspace.list", json!({}))),
         ["tab", "list"] => Some(("tab.list", json!({}))),
         ["pane", "list"] => Some(("pane.list", json!({}))),
+        ["agent", "list"] => Some(("agent.list", json!({}))),
         ["workspace", "focus", id] => Some(("workspace.focus", json!({"workspace_id": id}))),
         ["tab", "focus", id] => Some(("tab.focus", json!({"tab_id": id}))),
         ["agent", "focus", id] => Some(("pane.focus", json!({"pane_id": id}))),
@@ -414,6 +427,16 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
         .map(|r| r.panes)
         .unwrap_or_default();
 
+    let seqs: HashMap<String, u64> = herdr_cli::<AgentListResult>(&["agent", "list"])
+        .ok()
+        .map(|r| {
+            r.agents
+                .into_iter()
+                .map(|a| (a.pane_id, a.state_change_seq))
+                .collect()
+        })
+        .unwrap_or_default();
+
     // ── Build local lookup maps ──
     let ws_labels = workspace_labels(&ws_result.workspaces);
 
@@ -480,6 +503,7 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
             agent_id: pane.agent.clone(),
             agent_status,
             last_accessed_at: 0,
+            state_change_seq: seqs.get(&pane.pane_id).copied().unwrap_or(0),
         });
     }
 
@@ -707,7 +731,8 @@ mod tests {
         let panes = mock_io::make_output(
             r#"{"result":{"panes":[{"pane_id":"pane-1","workspace_id":"ws-1","tab_id":"tab-1","focused":false,"label":"MyPane"}]}}"#,
         );
-        mock_io::set_mock_outputs(vec![ws, tabs, panes]);
+        let agents = mock_io::make_output(r#"{"result":{"agents":[]}}"#);
+        mock_io::set_mock_outputs(vec![ws, tabs, panes, agents]);
 
         let (nodes, focused) = fetch_all_nodes().unwrap();
         assert_eq!(nodes.len(), 1);
@@ -724,7 +749,8 @@ mod tests {
         let ws = mock_io::make_output(r#"{"result":{"workspaces":[]}}"#);
         let tabs = mock_io::make_output(r#"{"result":{"tabs":[]}}"#);
         let panes = mock_io::make_output(r#"{"result":{"panes":[]}}"#);
-        mock_io::set_mock_outputs(vec![ws, tabs, panes]);
+        let agents = mock_io::make_output(r#"{"result":{"agents":[]}}"#);
+        mock_io::set_mock_outputs(vec![ws, tabs, panes, agents]);
 
         let (nodes, focused) = fetch_all_nodes().unwrap();
         assert!(nodes.is_empty(), "Empty lists should produce empty nodes");
@@ -744,7 +770,8 @@ mod tests {
         let panes = mock_io::make_output(
             r#"{"result":{"panes":[{"pane_id":"pane-1","workspace_id":"ws-1","tab_id":"tab-1","focused":false}]}}"#,
         );
-        mock_io::set_mock_outputs(vec![ws, tabs, panes]);
+        let agents = mock_io::make_output(r#"{"result":{"agents":[]}}"#);
+        mock_io::set_mock_outputs(vec![ws, tabs, panes, agents]);
 
         let (nodes, _) = fetch_all_nodes().unwrap();
         assert_eq!(nodes[0].pane_name.as_deref(), Some("untitled"));
@@ -763,7 +790,8 @@ mod tests {
         let panes = mock_io::make_output(
             r#"{"result":{"panes":[{"pane_id":"pane-1","workspace_id":"ws-1","tab_id":"tab-1","focused":true,"label":"ActivePane"}]}}"#,
         );
-        mock_io::set_mock_outputs(vec![ws, tabs, panes]);
+        let agents = mock_io::make_output(r#"{"result":{"agents":[]}}"#);
+        mock_io::set_mock_outputs(vec![ws, tabs, panes, agents]);
 
         let (_, focused) = fetch_all_nodes().unwrap();
         assert!(focused.is_some());
@@ -878,6 +906,7 @@ mod tests {
                 agent_id: None,
                 agent_status: crate::models::AgentStatus::None,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
             crate::models::NavigationNode {
                 workspace_id: "ws-1".into(),
@@ -889,6 +918,7 @@ mod tests {
                 agent_id: None,
                 agent_status: crate::models::AgentStatus::None,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
             crate::models::NavigationNode {
                 workspace_id: "ws-1".into(),
@@ -900,6 +930,7 @@ mod tests {
                 agent_id: Some("claude".into()),
                 agent_status: crate::models::AgentStatus::Working,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
         ];
 
@@ -955,6 +986,7 @@ mod tests {
                 agent_id: None,
                 agent_status: crate::models::AgentStatus::None,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
             crate::models::NavigationNode {
                 workspace_id: "ws-1".into(),
@@ -966,6 +998,7 @@ mod tests {
                 agent_id: Some("claude".into()),
                 agent_status: crate::models::AgentStatus::Working,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
             crate::models::NavigationNode {
                 workspace_id: "ws-1".into(),
@@ -977,6 +1010,7 @@ mod tests {
                 agent_id: None,
                 agent_status: crate::models::AgentStatus::None,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
             crate::models::NavigationNode {
                 workspace_id: "ws-1".into(),
@@ -988,6 +1022,7 @@ mod tests {
                 agent_id: None,
                 agent_status: crate::models::AgentStatus::None,
                 last_accessed_at: 0,
+                state_change_seq: 0,
             },
         ];
         // Exactly one fetch: for p-shell. cached/agent/self never fetch.

@@ -19,6 +19,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("claude".into()),
             agent_status: AgentStatus::Blocked,
             last_accessed_at: 5000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-1".into(),
@@ -30,6 +31,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("agent-01".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 2000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-1".into(),
@@ -41,6 +43,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("gemini".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 6000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-1".into(),
@@ -52,6 +55,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("ansible".into()),
             agent_status: AgentStatus::Done,
             last_accessed_at: 1800,
+            state_change_seq: 0,
         },
         // ── Backend-Repo workspace (ws-2) ──
         NavigationNode {
@@ -64,6 +68,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("opencode".into()),
             agent_status: AgentStatus::Done,
             last_accessed_at: 4000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-2".into(),
@@ -75,6 +80,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("envoy".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 3500,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-2".into(),
@@ -86,6 +92,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("pgadmin".into()),
             agent_status: AgentStatus::Idle,
             last_accessed_at: 1200,
+            state_change_seq: 0,
         },
         // ── Frontend-UI workspace (ws-3) ──
         NavigationNode {
@@ -98,6 +105,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::Idle,
             last_accessed_at: 3000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-3".into(),
@@ -109,6 +117,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("figma-bot".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 2800,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-3".into(),
@@ -120,6 +129,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("chromatic".into()),
             agent_status: AgentStatus::Done,
             last_accessed_at: 2200,
+            state_change_seq: 0,
         },
         // ── Infra-Deploy workspace (ws-4) — no agents ──
         NavigationNode {
@@ -132,6 +142,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::None,
             last_accessed_at: 1000,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-4".into(),
@@ -143,6 +154,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::None,
             last_accessed_at: 800,
+            state_change_seq: 0,
         },
         // ── ML-Pipeline workspace (ws-5) — many agents ──
         NavigationNode {
@@ -155,6 +167,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("pytorch".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 4500,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-5".into(),
@@ -166,6 +179,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("albumentations".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 4200,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-5".into(),
@@ -177,6 +191,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("sklearn".into()),
             agent_status: AgentStatus::Blocked,
             last_accessed_at: 3800,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-5".into(),
@@ -188,6 +203,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::Idle,
             last_accessed_at: 1600,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-5".into(),
@@ -199,6 +215,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("triton".into()),
             agent_status: AgentStatus::Done,
             last_accessed_at: 1400,
+            state_change_seq: 0,
         },
         // ── Data-Lake workspace (ws-6) ──
         NavigationNode {
@@ -211,6 +228,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("kafka-bot".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 3200,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-6".into(),
@@ -222,6 +240,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("spark-bot".into()),
             agent_status: AgentStatus::Blocked,
             last_accessed_at: 2500,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-6".into(),
@@ -233,6 +252,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::None,
             last_accessed_at: 900,
+            state_change_seq: 0,
         },
         // ── API-Gateway workspace (ws-7) — single pane, no agent ──
         NavigationNode {
@@ -245,6 +265,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: None,
             agent_status: AgentStatus::None,
             last_accessed_at: 700,
+            state_change_seq: 0,
         },
         // ── Mobile-App workspace (ws-8) ──
         NavigationNode {
@@ -257,6 +278,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("swift-bot".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 2100,
+            state_change_seq: 0,
         },
         NavigationNode {
             workspace_id: "ws-8".into(),
@@ -268,6 +290,7 @@ pub fn mock_nodes() -> Vec<NavigationNode> {
             agent_id: Some("kotlin-bot".into()),
             agent_status: AgentStatus::Working,
             last_accessed_at: 1900,
+            state_change_seq: 0,
         },
     ]
 }

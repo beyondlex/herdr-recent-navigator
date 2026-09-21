@@ -118,6 +118,11 @@ command = "beyondlex.herdr-recent-navigator.focus-agents"
 description = "Open Navigator: Agent"
 ```
 
+`focus-agents` lists agents most-recently-used first. `focus-agents-priority`
+and `focus-agents-grouped` order them like Herdr's sidebar in its "priority"
+(blocked → done → working → idle, latest status change first) and "grouped"
+(workspace → tab → pane) modes.
+
 Reload:
 
 ```bash

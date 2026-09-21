@@ -32,7 +32,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use cli::{Cli, Command as CliCommand};
-use models::{AppState, CategoryTab, FocusTarget, KeyAction, Keybindings, parse_tabs};
+use models::{AgentSort, AppState, CategoryTab, FocusTarget, KeyAction, Keybindings, parse_tabs};
 
 type RunInnerResult = Result<(
     AppState,
@@ -100,6 +100,12 @@ fn main() -> Result<()> {
                 state.save_category(&cat);
             }
         }
+        AppState::save_agent_sort(
+            cli.sort
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+        );
         return handle_pane_open();
     }
 
@@ -275,6 +281,12 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
     if !state.tabs.contains(&state.current_category) {
         state.current_category = state.tabs[0];
     }
+    state.agent_sort = cli
+        .sort
+        .as_deref()
+        .and_then(|s| s.parse::<AgentSort>().ok())
+        .or_else(AppState::load_agent_sort)
+        .unwrap_or_default();
 
     Ok((state, pane_ts, tab_ts, ws_ts, ctx, connected))
 }
@@ -749,6 +761,7 @@ fn run_event_loop(
             active_tab_id: ctx.tab_id.as_deref(),
             self_pane_id: ctx.self_pane_id.as_deref(),
             others: &state.others,
+            agent_sort: state.agent_sort,
         };
         // Use cache key to skip rebuild when input hasn't changed
         let cache_key = mru::build_cache_key(
@@ -1324,6 +1337,7 @@ mod integration_tests {
             agent_id: agent_id.map(str::to_string),
             agent_status: models::AgentStatus::Idle,
             last_accessed_at: 0,
+            state_change_seq: 0,
         }
     }
 
@@ -1436,7 +1450,7 @@ mod quick_focus_tests {
 
     // ── end-to-end regression for issue #17 ──
 
-    /// Queues mocks for the three live-state IPC calls (workspace/tab/pane
+    /// Queues mocks for the four live-state IPC calls (workspace/tab/pane/agent
     /// list) followed by a failing focus call whose stderr names the target
     /// id, so the test can assert *which* entry the handler selected.
     fn mock_live_state_with_failing_focus(target: &str) {
@@ -1449,12 +1463,13 @@ mod quick_focus_tests {
         let panes = mock_io::make_output(
             r#"{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","focused":true},{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","focused":false}]}}"#,
         );
+        let agents = mock_io::make_output(r#"{"result":{"agents":[]}}"#);
         let focus = std::process::Output {
             status: std::process::ExitStatus::from_raw(1),
             stdout: b"{}".to_vec(),
             stderr: format!("focused {target}").into_bytes(),
         };
-        mock_io::set_mock_outputs(vec![ws, tabs, panes, focus]);
+        mock_io::set_mock_outputs(vec![ws, tabs, panes, agents, focus]);
     }
 
     #[test]
