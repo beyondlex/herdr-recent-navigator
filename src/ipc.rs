@@ -236,7 +236,7 @@ fn args_to_method(args: &[&str]) -> Option<(&'static str, serde_json::Value)> {
         ["pane", "list"] => Some(("pane.list", json!({}))),
         ["workspace", "focus", id] => Some(("workspace.focus", json!({"workspace_id": id}))),
         ["tab", "focus", id] => Some(("tab.focus", json!({"tab_id": id}))),
-        ["pane", "zoom", id, "--off"] => Some(("pane.zoom", json!({"pane_id": id, "mode": "off"}))),
+        ["agent", "focus", id] => Some(("pane.focus", json!({"pane_id": id}))),
         ["pane", "process-info", "--pane", id] => {
             Some(("pane.process_info", json!({"pane_id": id})))
         }
@@ -675,11 +675,10 @@ pub fn focus_tab(tab_id: &str) -> Result<()> {
     run_focus(&["tab", "focus", tab_id])
 }
 
-/// Focus a specific pane via herdr CLI.
-/// Uses `pane zoom --off` to avoid the toggle-zoom behavior — the pane
-/// gets focused but never enters zoomed/maximized state.
+/// Focus a specific pane: `pane.focus` over UDS (moves the attached client's
+/// view), `herdr agent focus <pane_id>` as the CLI fallback.
 pub fn focus_pane(pane_id: &str) -> Result<()> {
-    run_focus(&["pane", "zoom", pane_id, "--off"])
+    run_focus(&["agent", "focus", pane_id])
 }
 
 fn run_focus(args: &[&str]) -> Result<()> {
@@ -1018,5 +1017,20 @@ mod tests {
         let (method, params) = mapped.unwrap();
         assert_eq!(method, "pane.process_info");
         assert_eq!(params, serde_json::json!({"pane_id": "w1:p2"}));
+    }
+
+    #[test]
+    fn test_args_to_method_focus_pane_uses_pane_focus() {
+        let (method, params) = args_to_method(&["agent", "focus", "w2:p1"]).unwrap();
+        assert_eq!(method, "pane.focus");
+        assert_eq!(params, serde_json::json!({"pane_id": "w2:p1"}));
+    }
+
+    #[test]
+    #[serial]
+    fn test_focus_pane_success() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_output(r#"{"result":{}}"#)]);
+        assert!(focus_pane("w2:p1").is_ok());
     }
 }
