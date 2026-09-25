@@ -166,7 +166,7 @@ impl From<AgentStatusWire> for AgentStatus {
 // ── Test mock infrastructure ──
 
 #[cfg(test)]
-mod mock_io {
+pub(crate) mod mock_io {
     use once_cell::sync::Lazy;
     use std::process::Output;
     use std::sync::Mutex;
