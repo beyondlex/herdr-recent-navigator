@@ -160,8 +160,10 @@ if command -v herdr &>/dev/null; then
       cat > "$CONFIG_FILE" <<'CONFIG_EOF'
 # Herdr Recent Navigator settings. This file is yours; upgrades never touch it.
 
-# "dark" (default) or "light"
-# theme = "dark"
+# Fallback theme, used only when Herdr itself reports no theme name.
+# "terminal" inherits your terminal palette; "dark"/"light" force a built-in
+# palette. Herdr's own theme is preferred when it is set.
+# theme = "terminal"
 
 # Uncomment and edit to customize internal navigation keys:
 # [keybindings]

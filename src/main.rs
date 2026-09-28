@@ -6,6 +6,7 @@ mod ipc;
 mod models;
 mod mru;
 mod others;
+mod theme;
 mod tracker;
 mod ui;
 
@@ -257,6 +258,10 @@ fn run_inner(cli: &Cli) -> RunInnerResult {
     if state.theme_name.is_none() {
         state.theme_name = settings.theme();
     }
+
+    // Colour overrides live only in Herdr's config, so apply them regardless of
+    // which layer supplied the theme name.
+    state.theme_overrides = read_herdr_config_theme_overrides();
 
     if let Some(last) = AppState::load_last_category() {
         state.current_category = last;
@@ -951,6 +956,13 @@ fn herdr_config_path() -> Option<PathBuf> {
     )
 }
 
+/// Parse Herdr's own config file, if present and readable.
+fn read_herdr_config() -> Option<toml::Value> {
+    let path = herdr_config_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    content.parse().ok()
+}
+
 /// Read `[theme] name` from Herdr's own config file.
 ///
 /// This is the authoritative source for the user's active theme. Herdr does not
@@ -958,14 +970,24 @@ fn herdr_config_path() -> Option<PathBuf> {
 /// is unreachable for anyone who hasn't hand-edited the plugin manifest.
 /// Returns `None` if the config is missing, unreadable, or has no `[theme] name`.
 fn read_herdr_config_theme() -> Option<String> {
-    let path = herdr_config_path()?;
-    let content = std::fs::read_to_string(path).ok()?;
-    let value: toml::Value = content.parse().ok()?;
+    let value = read_herdr_config()?;
     let name = value.get("theme")?.get("name")?.as_str()?.trim();
     if name.is_empty() {
         return None;
     }
     Some(name.to_string())
+}
+
+/// Read `[theme.custom]` colour overrides from Herdr's own config file.
+///
+/// These layer on top of the theme palette the same way Herdr applies them on
+/// top of its built-in theme. A missing config or absent/empty section yields no
+/// overrides.
+fn read_herdr_config_theme_overrides() -> crate::theme::ThemeOverrides {
+    read_herdr_config()
+        .and_then(|v| v.get("theme").and_then(|t| t.get("custom")).cloned())
+        .map(|custom| crate::theme::ThemeOverrides::from_toml(&custom))
+        .unwrap_or_default()
 }
 
 /// User-editable plugin settings (`theme`, `[keybindings]`, `[navigator]`).
@@ -1077,6 +1099,26 @@ mod theme_resolution_tests {
             assert_eq!(
                 read_herdr_config_theme(),
                 Some("catppuccin-latte".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn reads_theme_custom_overrides_from_herdr_config() {
+        let cfg = "[theme]\nname = \"terminal\"\n\n[theme.custom]\naccent = \"#a6e3a1\"\npanel_bg = \"reset\"\n";
+        with_herdr_config(Some(cfg), || {
+            let o = read_herdr_config_theme_overrides();
+            assert_eq!(o.accent, Some(ratatui::style::Color::Rgb(0xa6, 0xe3, 0xa1)));
+            assert_eq!(o.surface_dim, Some(ratatui::style::Color::Reset));
+        });
+    }
+
+    #[test]
+    fn returns_empty_overrides_when_custom_absent() {
+        with_herdr_config(Some("[theme]\nname = \"catppuccin\"\n"), || {
+            assert_eq!(
+                read_herdr_config_theme_overrides(),
+                crate::theme::ThemeOverrides::default()
             );
         });
     }

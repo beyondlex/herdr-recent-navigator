@@ -3,6 +3,7 @@ use crate::models::{
     AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
     WORKTREE_SEP,
 };
+use crate::theme::ThemeOverrides;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -18,6 +19,10 @@ struct Palette {
     surface0: Color,
     surface1: Color,
     surface_dim: Color,
+    /// Colour for text drawn on top of an accent-coloured background (tab
+    /// highlight, filter chips). Kept separate from `surface_dim` so a palette
+    /// can pick a readable contrast colour independently of the surface.
+    on_accent: Color,
     overlay0: Color,
     overlay1: Color,
     text: Color,
@@ -38,6 +43,7 @@ impl Palette {
             surface0: Color::Rgb(36, 40, 59),    // #24283b
             surface1: Color::Rgb(65, 72, 104),   // #414868
             surface_dim: Color::Rgb(26, 27, 38), // #1a1b26
+            on_accent: Color::Rgb(26, 27, 38),   // #1a1b26
             overlay0: Color::Rgb(86, 95, 137),   // #565f89
             overlay1: Color::Rgb(105, 113, 150), // #69719e
             text: Color::Rgb(192, 202, 245),     // #c0caf5
@@ -58,6 +64,7 @@ impl Palette {
             surface0: Color::Rgb(203, 204, 209),    // #cbccd1
             surface1: Color::Rgb(216, 217, 222),    // #d8d9de
             surface_dim: Color::Rgb(239, 241, 245), // #eff1f5
+            on_accent: Color::Rgb(239, 241, 245),   // #eff1f5
             overlay0: Color::Rgb(156, 157, 165),    // #9c9da5
             overlay1: Color::Rgb(139, 140, 148),    // #8b8d94
             text: Color::Rgb(55, 96, 191),          // #3760bf
@@ -72,10 +79,70 @@ impl Palette {
         }
     }
 
+    /// Inherit the terminal's own palette: default foreground/background for
+    /// text and surfaces, ANSI colours for accents. This matches whatever theme
+    /// the terminal is using, including Herdr's `[theme] name = "terminal"`.
+    fn terminal() -> Self {
+        Self {
+            accent: Color::Blue,
+            surface0: Color::DarkGray,
+            surface1: Color::DarkGray,
+            surface_dim: Color::Reset,
+            on_accent: Color::Black,
+            overlay0: Color::DarkGray,
+            overlay1: Color::Gray,
+            text: Color::Reset,
+            subtext0: Color::Gray,
+            mauve: Color::Magenta,
+            green: Color::Green,
+            yellow: Color::Yellow,
+            red: Color::Red,
+            blue: Color::Blue,
+            teal: Color::Cyan,
+            peach: Color::LightRed,
+        }
+    }
+
     fn for_theme(theme_name: Option<&str>) -> Self {
-        match theme_name {
+        match theme_name.map(str::trim) {
+            // Herdr is configured to follow the host terminal, so do the same.
+            Some(n) if n.eq_ignore_ascii_case("terminal") => Self::terminal(),
             Some(n) if is_light_theme(n) => Self::light(),
+            // A Herdr theme, or no theme at all (which means Herdr's own default
+            // theme): prefer the built-in dark palette over the host terminal.
             _ => Self::dark(),
+        }
+    }
+
+    /// Layer Herdr's `[theme.custom]` overrides on top of this palette. Slots
+    /// the user did not override keep their theme value.
+    fn overlay(&mut self, o: &ThemeOverrides) {
+        macro_rules! apply {
+            ($($field:ident),+ $(,)?) => {
+                $( if let Some(color) = o.$field { self.$field = color; } )+
+            };
+        }
+        apply!(
+            accent,
+            surface0,
+            surface1,
+            surface_dim,
+            overlay0,
+            overlay1,
+            text,
+            subtext0,
+            mauve,
+            green,
+            yellow,
+            red,
+            blue,
+            teal,
+            peach,
+        );
+        // Herdr's focused tab uses `panel_bg` text on the accent background.
+        // `reset` means the palette's own dim surface, so keep the default.
+        if let Some(color) = o.panel_bg.filter(|c| *c != Color::Reset) {
+            self.on_accent = color;
         }
     }
 }
@@ -159,7 +226,11 @@ fn row_sel_style(sel: bool, p: &Palette) -> Style {
 // ── Public render entry point ───────────────────────────────────────────────
 
 pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], total: usize) {
-    let p = Palette::for_theme(state.theme_name.as_deref());
+    let p = {
+        let mut p = Palette::for_theme(state.theme_name.as_deref());
+        p.overlay(&state.theme_overrides);
+        p
+    };
     let area = frame.area();
 
     // Minimum terminal size guard
@@ -267,7 +338,7 @@ fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, nar
             )
             .highlight_style(
                 Style::default()
-                    .fg(p.surface_dim)
+                    .fg(p.on_accent)
                     .bg(p.accent)
                     .add_modifier(Modifier::BOLD),
             )
@@ -347,7 +418,7 @@ fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
     Span::styled(
         format!(" {} ", f.label()),
         Style::default()
-            .fg(p.surface_dim)
+            .fg(p.on_accent)
             .bg(color)
             .add_modifier(Modifier::BOLD),
     )
@@ -915,9 +986,61 @@ mod palette_tests {
     }
 
     #[test]
-    fn for_theme_defaults_to_dark_when_unknown_or_absent() {
+    fn for_theme_uses_terminal_palette_only_when_explicit() {
+        let term = Palette::terminal();
+        assert_eq!(
+            Palette::for_theme(Some("terminal")).surface_dim,
+            term.surface_dim
+        );
+        assert_eq!(
+            Palette::for_theme(Some("  Terminal ")).surface_dim,
+            term.surface_dim
+        );
+    }
+
+    #[test]
+    fn for_theme_prefers_herdr_theme_over_terminal_by_default() {
         let dark = Palette::dark();
+        let light = Palette::light();
+        // An unset theme means Herdr's own default theme, so prefer the
+        // built-in dark palette rather than the host terminal.
         assert_eq!(Palette::for_theme(None).text, dark.text);
+        // Any non-light Herdr theme name uses the built-in dark palette.
         assert_eq!(Palette::for_theme(Some("tokyonight")).text, dark.text);
+        assert_eq!(Palette::for_theme(Some("catppuccin")).text, dark.text);
+        assert_eq!(Palette::for_theme(Some("osaka-jade")).text, dark.text);
+        // Light Herdr theme names use the built-in light palette.
+        assert_eq!(Palette::for_theme(Some("one-light")).text, light.text);
+    }
+
+    #[test]
+    fn overlay_applies_only_set_slots() {
+        let base = Palette::dark();
+        let mut p = Palette::dark();
+        let o = ThemeOverrides {
+            accent: Some(Color::Rgb(9, 9, 9)),
+            surface_dim: Some(Color::Reset),
+            panel_bg: Some(Color::Rgb(7, 7, 7)),
+            ..ThemeOverrides::default()
+        };
+        p.overlay(&o);
+        assert_eq!(p.accent, Color::Rgb(9, 9, 9));
+        assert_eq!(p.surface_dim, Color::Reset);
+        // `panel_bg` also drives the accent foreground.
+        assert_eq!(p.on_accent, Color::Rgb(7, 7, 7));
+        // Untouched slots keep their theme value.
+        assert_eq!(p.text, base.text);
+        assert_eq!(p.green, base.green);
+    }
+
+    #[test]
+    fn overlay_keeps_default_on_accent_when_panel_bg_is_reset() {
+        let base = Palette::light();
+        let mut p = Palette::light();
+        p.overlay(&ThemeOverrides {
+            panel_bg: Some(Color::Reset),
+            ..ThemeOverrides::default()
+        });
+        assert_eq!(p.on_accent, base.on_accent);
     }
 }
