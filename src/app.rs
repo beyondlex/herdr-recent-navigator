@@ -17,6 +17,7 @@ impl AppState {
             selected_index: 0,
             spinner_tick: 0,
             theme_name: None,
+            theme_overrides: crate::theme::ThemeOverrides::default(),
             cache_key: None,
             cached_displayed: std::rc::Rc::new(Vec::new()),
             cached_total: 0,

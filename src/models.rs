@@ -540,6 +540,8 @@ pub struct AppState {
     pub spinner_tick: u32,
     /// Herdr theme name (e.g. "tokyonight", "tokyonight-storm") from context.
     pub theme_name: Option<String>,
+    /// Colour overrides from Herdr's `[theme.custom]`, layered on the palette.
+    pub theme_overrides: crate::theme::ThemeOverrides,
     /// Cache key: hash of the last display-list build inputs.
     /// Used to skip re-sorting every frame when nothing changed.
     pub cache_key: Option<u64>,

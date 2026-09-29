@@ -39,7 +39,7 @@ navigable by keyboard.
   through the tree
 - **Live agent status**: Working agents show a braille spinner; status updates
   in real time without reopening
-- **Herdr-native colors**: TokyoNight palette, consistent with the Herdr UI
+- **Follows your Herdr theme**: dark (TokyoNight) or light (One Light) palettes, or the host terminal palette when Herdr is set to `terminal`, with your `[theme.custom]` colour overrides applied on top
 - **Automatic tracking**: hooks into `workspace.focused`, `pane.focused`,
   `tab.focused` events to build `MRU` history
 
@@ -169,7 +169,7 @@ Create `config.toml` there (the installer seeds a commented template if the
 file doesn't exist). `theme`, `[keybindings]` and `[navigator]` all go in this one file:
 
 ```toml
-theme = "light"
+theme = "terminal"
 
 [keybindings]
 move_up = ["Up", "C-k"]
@@ -183,12 +183,38 @@ anything you've customized into `config.toml`.
 ### Theme
 
 ```toml
-theme = "light"        # "dark" (default) or "light"
+theme = "terminal"     # fallback: "terminal" | "dark" | "light"
 ```
 
-The navigator uses a dark TokyoNight palette by default. Set `theme = "light"`
-for a light palette. Full per-theme auto-detection will be added once Herdr
-sends the theme name via `HERDR_PLUGIN_CONTEXT_JSON`.
+The navigator follows your Herdr theme. The active theme name is resolved from
+Herdr's `HERDR_PLUGIN_CONTEXT_JSON` when available, then from `[theme] name` in
+your Herdr config, then from this setting:
+
+- `terminal` — inherit the terminal's own colours (default foreground/background
+  plus ANSI accents). Use this when Herdr is configured with
+  `[theme] name = "terminal"`.
+- a light theme name (`*-light`, `*-latte`, `*-day`, `*-dawn`, `*-lotus`) — the
+  built-in One Light palette.
+- anything else, including an unset theme — the built-in dark (TokyoNight)
+  palette, so the popup matches Herdr's UI rather than the host terminal.
+
+Herdr does not currently expose theme colours to plugins, so a Herdr theme the
+navigator has no dedicated palette for is approximated by the built-in dark or
+light palette.
+
+Colour overrides from Herdr's `[theme.custom]` table are applied on top of the
+palette, in the same order Herdr uses (built-in theme, then `custom`). A custom
+`accent`, `panel_bg`, `surface0`, `text`, `selection_bg`, and so on are therefore
+respected. Values accept hex, `rgb(r,g,b)`, reset aliases (`reset`, `default`,
+`none`, `transparent`) and common named colours. `panel_bg` maps to the popup
+background and to the accent-background text (the active tab and filter chips);
+it is the colour Herdr fills the plugin-popup frame with, even though Herdr's
+config reference only shows it in examples. `selection_bg` / `active_row_bg` map
+to the selected row. `sidebar_bg` is desktop-sidebar-only and has no popup
+equivalent, so it is not mapped. Herdr's `surface_dim`
+(separators, scrollbars) and `surface1` (dragged rows) are not mapped. The
+`[theme.custom.light]` / `[theme.custom.dark]` sub-tables are ignored, because a
+plugin is never told the current light/dark appearance.
 
 ### Keybindings
 
