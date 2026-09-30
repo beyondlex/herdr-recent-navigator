@@ -89,7 +89,7 @@ impl Palette {
             surface1: Color::DarkGray,
             surface_dim: Color::Reset,
             on_accent: Color::Black,
-            overlay0: Color::DarkGray,
+            overlay0: Color::Gray,
             overlay1: Color::Gray,
             text: Color::Reset,
             subtext0: Color::Gray,
@@ -329,11 +329,16 @@ fn render_tabs(frame: &mut Frame, state: &AppState, area: Rect, p: &Palette, nar
     } else {
         Span::raw("|").style(Style::default().fg(p.overlay0))
     };
+    let borders = if p.surface_dim == Color::Reset {
+        Borders::NONE
+    } else {
+        Borders::BOTTOM
+    };
     frame.render_widget(
         Tabs::new(titles)
             .block(
                 Block::default()
-                    .borders(Borders::BOTTOM)
+                    .borders(borders)
                     .border_style(Style::default().fg(p.surface_dim)),
             )
             .highlight_style(
@@ -996,6 +1001,12 @@ mod palette_tests {
             Palette::for_theme(Some("  Terminal ")).surface_dim,
             term.surface_dim
         );
+    }
+
+    #[test]
+    fn terminal_palette_dim_text_is_visible_on_selected_row() {
+        let term = Palette::terminal();
+        assert_ne!(term.overlay0, term.surface1);
     }
 
     #[test]
