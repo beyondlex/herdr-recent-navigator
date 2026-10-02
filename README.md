@@ -259,9 +259,9 @@ Ctrl-based combinations when possible.
 | `move_up` | `Up`, `C-p` | Move selection up |
 | `move_down` | `Down`, `C-n` | Move selection down |
 | `select` | `Enter` | Focus selected item |
-| `dismiss` | `Esc` | Clear search / close |
+| `dismiss` | `Esc` | Leave filter input, or close from navigation |
 | `force_quit` | `C-c` | Close without focusing |
-| `backspace` | `Backspace` | Delete last search character |
+| `backspace` | `Backspace` | Delete last query character while filtering |
 
 ### Tab order and visibility
 
@@ -287,15 +287,18 @@ tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 
 | Key (default) | Action |
 |---|---|
-| `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate list |
-| `Tab` / `Shift+Tab` | Cycle category tabs |
+| `/` | Enter filter mode without changing the current query |
+| `j` / `k`, `↑` / `↓`, or `Ctrl+N` / `Ctrl+P` | Navigate the list outside filter mode |
+| Type text or use `Backspace` | Edit the query while filtering; printable keys do nothing in navigation mode |
+| `Esc` | Leave filter mode preserving query/results; press again in navigation mode to close |
+| `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
 | `Enter` | Focus selected item |
-| `Esc` | Clear search / close |
 | `Ctrl+C` | Close without focusing |
-| Type any text | Fuzzy-search the list |
 
-All keys in the table above are configurable — see [Keybindings](#keybindings)
-to customize.
+Arrow, Ctrl navigation, category, select, dismiss and backspace bindings are
+configurable — see [Keybindings](#keybindings). Filter mode gives printable
+characters priority over custom printable movement bindings so text remains
+editable.
 
 ### Category tabs
 
