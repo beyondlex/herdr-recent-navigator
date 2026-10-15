@@ -259,9 +259,31 @@ Ctrl-based combinations when possible.
 | `move_up` | `Up`, `C-p` | Move selection up |
 | `move_down` | `Down`, `C-n` | Move selection down |
 | `select` | `Enter` | Focus selected item |
-| `dismiss` | `Esc` | Leave filter input, or close from navigation |
+| `dismiss` | `Esc` | Step back: leave filter → clear query → close |
 | `force_quit` | `C-c` | Close without focusing |
-| `backspace` | `Backspace` | Delete last query character while filtering |
+| `backspace` | `Backspace` | Delete last query character |
+
+#### Input modes
+
+By default the navigator is **modeless**: every printable key goes straight into
+the query, so typing filters immediately and `j`, `k` and `/` are just text.
+
+Binding a printable key to a navigation action — `j`/`k` on movement, or a
+letter on `next_category` — turns on the modal style, because a key cannot both
+move the list and be typed:
+
+```toml
+[keybindings]
+move_up = ["k", "Up"]
+move_down = ["j", "Down"]
+```
+
+In modal use, `j`/`k` always move the list, `/` enters filter mode, and printable
+keys edit the query while filtering (so a query can still contain `j` and `k`).
+`Esc` steps back one layer at a time: leave the filter, then drop the query, then
+close. Nothing else to configure: which style you get follows from which keys you
+bound. The mode shows up in the bottom hints and in the prompt colour, never as a
+mode label taking a row.
 
 ### Tab order and visibility
 
@@ -285,20 +307,32 @@ tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 
 ## Usage
 
-| Key (default) | Action |
+### Type-to-search (default keybindings)
+
+| Key | Action |
 |---|---|
-| `/` | Enter filter mode without changing the current query |
-| `j` / `k`, `↑` / `↓`, or `Ctrl+N` / `Ctrl+P` | Navigate the list outside filter mode |
-| Type text or use `Backspace` | Edit the query while filtering; printable keys do nothing in navigation mode |
-| `Esc` | Leave filter mode preserving query/results; press again in navigation mode to close |
-| `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
+| Type text, `Backspace` | Filter the list as you type |
+| `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate the list |
+| `Tab` / `Shift+Tab` | Cycle category tabs |
 | `Enter` | Focus selected item |
+| `Esc` | Clear the query, then close |
 | `Ctrl+C` | Close without focusing |
 
-Arrow, Ctrl navigation, category, select, dismiss and backspace bindings are
-configurable — see [Keybindings](#keybindings). Filter mode gives printable
-characters priority over custom printable movement bindings so text remains
-editable.
+### Vim-style (movement bound to a printable key)
+
+| Key | Action |
+|---|---|
+| `j` / `k`, `↑` / `↓`, `Ctrl+N` / `Ctrl+P` | Navigate the list |
+| `/` | Enter filter mode, keeping the current query |
+| Type text, `Backspace` | Edit the query while filtering |
+| `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
+| `Enter` | Focus selected item |
+| `Esc` | Leave filter mode keeping the query; again clears the query; again closes |
+| `Ctrl+C` | Close without focusing |
+
+Which table applies is decided by your `[keybindings]`, see
+[Input modes](#input-modes). Navigation, category, select, dismiss and backspace
+bindings are configurable in both styles — see [Keybindings](#keybindings).
 
 ### Category tabs
 
