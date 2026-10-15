@@ -278,8 +278,9 @@ move_up = ["k", "Up"]
 move_down = ["j", "Down"]
 ```
 
-In modal use, `j`/`k` always move the list, `/` enters filter mode, and printable
-keys edit the query while filtering (so a query can still contain `j` and `k`).
+In modal use, `j`/`k` always move the list, `h`/`l` switch category tabs, `/`
+enters filter mode, and printable keys edit the query while filtering (so a query
+can still contain `j`, `k`, `h` and `l`).
 `Esc` steps back one layer at a time: leave the filter, then drop the query, then
 close. Nothing else to configure: which style you get follows from which keys you
 bound. The mode shows up in the bottom hints and in the prompt colour, never as a

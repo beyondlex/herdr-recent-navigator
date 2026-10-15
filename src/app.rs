@@ -119,7 +119,7 @@ impl AppState {
 
     /// Vim-style two-mode input, only reachable when movement is bound to a
     /// printable key: `/` (or `Esc`) moves the keys between driving the list and
-    /// editing the query.
+    /// editing the query. Outside the filter `j`/`k` move and `h`/`l` switch tabs.
     fn handle_key_modal(&mut self, key: crossterm::event::KeyEvent, list_len: usize) -> KeyAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -292,19 +292,20 @@ mod tests {
         }
     }
 
-    /// Default users keep the old behaviour: typing filters at once, `/` and
-    /// `j`/`k` are text, Backspace deletes, Esc clears before it closes.
+    /// Default users keep the old behaviour: typing filters at once, `/`,
+    /// `j`/`k` and `h`/`l` are text, Backspace deletes, Esc clears before it closes.
     #[test]
     fn test_modeless_typing_filters_at_once() {
         let mut state = make_state();
-        for c in "j/k".chars() {
+        for c in "hj/kl".chars() {
             state.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE), 10);
         }
-        assert_eq!(state.search_query, "j/k");
+        assert_eq!(state.search_query, "hj/kl");
         assert_eq!(state.input_mode, InputMode::TypeToSearch);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
 
         state.handle_key(make_key(KeyCode::Backspace, KeyModifiers::NONE), 10);
-        assert_eq!(state.search_query, "j/");
+        assert_eq!(state.search_query, "hj/k");
 
         assert_eq!(
             state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 10),
@@ -377,27 +378,33 @@ mod tests {
         assert_eq!(state.search_query, "kep");
     }
 
+    /// In navigation mode `h`/`l` step through the category tabs next to the
+    /// configured `Tab`/`S-Tab`, wrapping like them; while filtering they are text.
     #[test]
-    fn test_navigation_mode_h_l_cycle_categories_alongside_tab() {
+    fn test_navigation_mode_h_l_cycle_categories() {
         let mut state = make_vim_state();
-        let first = state.current_category;
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+
         state.selected_index = 2;
-
-        state.handle_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE), 4);
-        assert_ne!(state.current_category, first);
+        state.handle_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Tabs);
         assert_eq!(state.selected_index, 0);
-        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 4);
-        assert_eq!(state.current_category, first);
 
-        // Tab keeps working next to l.
-        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 4);
-        assert_ne!(state.current_category, first);
+        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::All);
 
-        // While filtering, h and l are query text.
-        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
-        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 4);
-        state.handle_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE), 4);
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 10);
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
+        assert!(state.search_query.is_empty());
+
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 10);
+        for c in ['h', 'l'] {
+            state.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE), 10);
+        }
         assert_eq!(state.search_query, "hl");
+        assert_eq!(state.current_category, CategoryTab::Workspaces);
     }
 
     /// Test E: Tab cycles categories correctly
