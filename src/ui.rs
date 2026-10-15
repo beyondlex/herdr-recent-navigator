@@ -603,29 +603,23 @@ fn render_list(
 /// Status bar: `(key, label)` hints, most essential first, packed into whatever
 /// width the pane gives and dropped from the end when they do not fit — so a long
 /// binding name (`C-Space`) shortens the bar instead of truncating it mid-word.
-/// What is advertised depends on the input mode; the modeless bar names only the
-/// keys the user configured, exactly as before filter modes existed.
+/// What is advertised depends on the input mode, and in every mode the keys named
+/// are the ones the user configured.
 fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, state: &AppState) {
     fn first(v: &[String]) -> &str {
         v.first().map(|s| s.as_str()).unwrap_or("?")
     }
     let kb = &state.keybindings;
     let move_keys = format!("{}/{}", first(&kb.move_up), first(&kb.move_down));
-    // In navigation mode j/k move the list on top of the configured keys, unless
-    // the user already configured them as the movement keys.
-    let nav_moves = if matches!(
-        (first(&kb.move_up), first(&kb.move_down)),
-        ("j", "k") | ("k", "j")
-    ) {
-        move_keys.clone()
-    } else {
-        format!("j/k·{move_keys}")
-    };
 
     // Most essential first, least guessable last: the tab strip above the list
     // already shows the categories, so they get no hint here, and on a narrow
     // pane the last thing to fall off is how to start filtering — the empty
-    // prompt says `type / to filter` for that.
+    // prompt says `type / to filter` for that. The hardcoded vim movement keys
+    // are left out on purpose: navigation mode only switches on for someone who
+    // bound a letter to a navigation action, so they chose those keys while
+    // writing the config, which is also where the README documents them. Naming
+    // them here would spend the scarcest column budget on keys the reader knows.
     let hints: Vec<(&str, &str)> = match state.input_mode {
         InputMode::TypeToSearch => vec![
             (first(&kb.select), "Focus"),
@@ -637,7 +631,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, state: &AppStat
         InputMode::Navigation => vec![
             (first(&kb.select), "Go"),
             (first(&kb.dismiss), "Close"),
-            (nav_moves.as_str(), "Move"),
+            (move_keys.as_str(), "Move"),
             ("/", "Filter"),
         ],
         InputMode::Filtering => vec![
@@ -651,9 +645,11 @@ fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, state: &AppStat
     let mut spans: Vec<Span> = Vec::new();
     let mut used = 0;
     for (key, label) in hints {
-        // Display columns, not bytes: the separator above is not ASCII. The three
-        // pad columns are the hint's own key/label space plus a two-column gutter,
-        // which is what keeps `Esc Close  Tab Next` from reading as one long label.
+        // Display columns, not bytes: a binding name can carry a non-ASCII key
+        // (`move_up = ["←"]`), which counts as one column but several bytes. The
+        // three pad columns are the hint's own key/label space plus a two-column
+        // gutter, which is what keeps `Esc Close  Tab Next` from reading as one
+        // long label.
         let width = UnicodeWidthStr::width(key) + UnicodeWidthStr::width(label) + 3;
         if used + width > area.width as usize {
             break;
@@ -1146,15 +1142,31 @@ mod status_hint_tests {
     }
 
     #[test]
-    fn navigation_advertises_vim_and_configured_keys() {
-        // j/k work in navigation mode on top of whatever the user bound, and a
-        // non-ASCII separator must be counted as one column, not one byte.
+    fn navigation_names_only_the_configured_keys() {
+        // j/k move the list in navigation mode on top of the configured keys, but
+        // they stay unadvertised: only someone who bound letters in the config can
+        // be here, and that is the same person who read the README.
         let kb = Keybindings {
             move_down: vec!["j".into()],
             ..Default::default()
         };
         let (nav, _) = status(90, InputMode::Navigation, kb);
-        assert!(nav.contains("j/k·Up/j Move"), "{nav:?}");
+        assert!(nav.contains("Up/j Move"), "{nav:?}");
+        assert!(!nav.contains("j/k"), "{nav:?}");
+    }
+
+    #[test]
+    fn a_non_ascii_binding_is_packed_by_column_not_by_byte() {
+        // "←/→" is three columns in seven bytes, and those four spare bytes are
+        // enough to push `/ Filter` off a 41-column bar if the packing counts
+        // bytes instead of columns.
+        let kb = Keybindings {
+            move_up: vec!["←".into()],
+            move_down: vec!["→".into()],
+            ..Default::default()
+        };
+        let (line, _) = status(41, InputMode::Navigation, kb);
+        assert!(line.ends_with("/ Filter"), "{line:?}");
     }
 
     #[test]
