@@ -1,4 +1,4 @@
-use crate::models::{Action, AppState, CategoryTab, KeyAction, Keybindings};
+use crate::models::{Action, AppState, CategoryTab, InputMode, KeyAction, Keybindings};
 
 impl AppState {
     pub fn new(
@@ -14,6 +14,7 @@ impl AppState {
             current_category: tabs.first().copied().unwrap_or(CategoryTab::Workspaces),
             tabs,
             search_query: String::new(),
+            input_mode: InputMode::Navigation,
             selected_index: 0,
             spinner_tick: 0,
             theme_name: None,
@@ -47,16 +48,30 @@ impl AppState {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent, list_len: usize) -> KeyAction {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        match self.keybindings.action_for(&key) {
-            Some(Action::Dismiss) => {
-                if self.search_query.is_empty() {
-                    KeyAction::ExitDismiss
-                } else {
-                    self.search_query.clear();
-                    self.selected_index = 0;
-                    KeyAction::Continue
-                }
+        let action = self.keybindings.action_for(&key);
+
+        // Printable input wins over configurable printable movement bindings
+        // while filtering; otherwise keys such as j/k could not be searched.
+        if self.input_mode == InputMode::Filtering
+            && let KeyCode::Char(c) = key.code
+            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        {
+            self.search_query.push(c);
+            self.selected_index = 0;
+            return KeyAction::Continue;
+        }
+
+        match action {
+            Some(Action::Dismiss) if self.input_mode == InputMode::Filtering => {
+                self.input_mode = InputMode::Navigation;
+                KeyAction::Continue
             }
+            Some(Action::Dismiss) => KeyAction::ExitDismiss,
+            None if key.code == KeyCode::Esc && self.input_mode == InputMode::Filtering => {
+                self.input_mode = InputMode::Navigation;
+                KeyAction::Continue
+            }
+            None if key.code == KeyCode::Esc => KeyAction::ExitDismiss,
             Some(Action::ForceQuit) => KeyAction::ExitDismiss,
             Some(Action::Select) => KeyAction::ExitSelect,
             Some(Action::NextCategory) => {
@@ -69,11 +84,12 @@ impl AppState {
                 self.selected_index = 0;
                 KeyAction::Continue
             }
-            Some(Action::Backspace) => {
+            Some(Action::Backspace) if self.input_mode == InputMode::Filtering => {
                 self.search_query.pop();
                 self.selected_index = 0;
                 KeyAction::Continue
             }
+            Some(Action::Backspace) => KeyAction::Continue,
             Some(Action::MoveUp) => {
                 self.select_prev(list_len);
                 KeyAction::Continue
@@ -83,13 +99,17 @@ impl AppState {
                 KeyAction::Continue
             }
             None => {
-                // Fall through: character input for search
-                if let KeyCode::Char(c) = key.code
-                    && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
-                {
-                    self.search_query.push(c);
-                    self.selected_index = 0;
-                    return KeyAction::Continue;
+                match (self.input_mode, key.code, key.modifiers) {
+                    (InputMode::Navigation, KeyCode::Char('/'), KeyModifiers::NONE) => {
+                        self.input_mode = InputMode::Filtering;
+                    }
+                    (InputMode::Navigation, KeyCode::Char('j'), KeyModifiers::NONE) => {
+                        self.select_next(list_len);
+                    }
+                    (InputMode::Navigation, KeyCode::Char('k'), KeyModifiers::NONE) => {
+                        self.select_prev(list_len);
+                    }
+                    _ => {}
                 }
                 KeyAction::Continue
             }
@@ -127,7 +147,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::data::mock_nodes;
-    use crate::models::{CategoryTab, KeyAction, Keybindings};
+    use crate::models::{CategoryTab, InputMode, KeyAction, Keybindings};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -140,6 +160,57 @@ mod tests {
             Keybindings::default(),
             CategoryTab::all().to_vec(),
         )
+    }
+
+    #[test]
+    fn test_filter_mode_transitions_and_input_precedence() {
+        let mut state = make_state();
+        assert_eq!(state.input_mode, InputMode::Navigation);
+
+        state.search_query = "kept".into();
+        state.selected_index = 2;
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4),
+            KeyAction::Continue
+        );
+        assert_eq!(state.input_mode, InputMode::Filtering);
+        assert_eq!(state.search_query, "kept");
+
+        for c in ['j', 'k', '/'] {
+            state.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE), 4);
+        }
+        assert_eq!(state.search_query, "keptjk/");
+        assert_eq!(state.selected_index, 0);
+
+        state.selected_index = 2;
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 4),
+            KeyAction::Continue
+        );
+        assert_eq!(state.input_mode, InputMode::Navigation);
+        assert_eq!(state.search_query, "keptjk/");
+        assert_eq!(state.selected_index, 2);
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 4),
+            KeyAction::ExitDismiss
+        );
+    }
+
+    #[test]
+    fn test_navigation_mode_ignores_printable_keys_and_backspace() {
+        let mut state = make_state();
+        state.search_query = "kept".into();
+
+        for c in ['j', 'k', 'x'] {
+            state.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE), 4);
+        }
+        state.handle_key(make_key(KeyCode::Backspace, KeyModifiers::NONE), 4);
+
+        assert_eq!(state.search_query, "kept");
+        assert_eq!(state.input_mode, InputMode::Navigation);
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
+        assert_eq!(state.input_mode, InputMode::Filtering);
+        assert_eq!(state.search_query, "kept");
     }
 
     /// Test E: Tab cycles categories correctly
@@ -214,6 +285,7 @@ mod tests {
     #[test]
     fn test_number_keys_append_to_search() {
         let mut state = make_state();
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 10);
 
         let action = state.handle_key(make_key(KeyCode::Char('3'), KeyModifiers::NONE), 10);
         assert_eq!(action, KeyAction::Continue, "Number key should continue");
@@ -258,6 +330,7 @@ mod tests {
     #[test]
     fn test_backspace_modifies_search() {
         let mut state = make_state();
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 10);
         for c in "hello".chars() {
             state.handle_key(make_key(KeyCode::Char(c), KeyModifiers::NONE), 10);
         }
@@ -280,15 +353,113 @@ mod tests {
         );
     }
 
-    /// Esc with non-empty search should clear search (not exit)
+    /// Esc in navigation dismisses without clearing the saved query.
     #[test]
-    fn test_esc_clears_search() {
+    fn test_esc_in_navigation_dismisses_and_preserves_query() {
         let mut state = make_state();
-        state.handle_key(make_key(KeyCode::Char('x'), KeyModifiers::NONE), 10);
-        assert_eq!(state.search_query, "x");
-        let action = state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 10);
-        assert_eq!(action, KeyAction::Continue);
+        state.search_query = "saved".into();
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 10),
+            KeyAction::ExitDismiss
+        );
+        assert_eq!(state.search_query, "saved");
+    }
+
+    #[test]
+    fn test_filter_mode_preserves_navigation_and_control_bindings() {
+        let mut state = make_state();
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
+
+        state.handle_key(make_key(KeyCode::Down, KeyModifiers::NONE), 4);
+        assert_eq!(state.selected_index, 1);
+        state.handle_key(make_key(KeyCode::Char('n'), KeyModifiers::CONTROL), 4);
+        assert_eq!(state.selected_index, 2);
         assert!(state.search_query.is_empty());
+
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 4);
+        assert_eq!(state.current_category, CategoryTab::Tabs);
+        assert!(state.search_query.is_empty());
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Enter, KeyModifiers::NONE), 4),
+            KeyAction::ExitSelect
+        );
+    }
+
+    #[test]
+    fn test_ctrl_c_dismisses_while_filtering() {
+        let mut state = make_state();
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
+        state.handle_key(make_key(KeyCode::Char('x'), KeyModifiers::NONE), 4);
+
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Char('c'), KeyModifiers::CONTROL), 4),
+            KeyAction::ExitDismiss
+        );
+        assert_eq!(state.search_query, "x");
+    }
+
+    #[test]
+    fn test_custom_printable_movement_binding_respects_mode_precedence() {
+        let mut keybindings = Keybindings::default();
+        keybindings.move_down = vec!["j".into()];
+        let mut state = AppState::new(mock_nodes(), keybindings, CategoryTab::all().to_vec());
+
+        state.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE), 4);
+        assert_eq!(state.selected_index, 1);
+        assert!(state.search_query.is_empty());
+
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
+        state.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE), 4);
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(state.search_query, "j");
+    }
+
+    #[test]
+    fn test_vim_navigation_wraps_and_handles_empty_lists() {
+        let mut state = make_state();
+        state.selected_index = 2;
+        state.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE), 3);
+        assert_eq!(state.selected_index, 0);
+        state.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE), 3);
+        assert_eq!(state.selected_index, 2);
+
+        state.handle_key(make_key(KeyCode::Char('j'), KeyModifiers::NONE), 0);
+        assert_eq!(state.selected_index, 0);
+        state.handle_key(make_key(KeyCode::Char('k'), KeyModifiers::NONE), 0);
+        assert_eq!(state.selected_index, 0);
+        assert!(state.search_query.is_empty());
+        assert_eq!(state.input_mode, InputMode::Navigation);
+    }
+
+    #[test]
+    fn test_esc_preserves_cached_results_and_selection() {
+        use crate::models::{AgentStatus, DisplayItem};
+        use std::rc::Rc;
+
+        let mut state = make_state();
+        state.search_query = "kept".into();
+        state.selected_index = 1;
+        let cached = Rc::new(vec![DisplayItem::Workspace {
+            name: "workspace".into(),
+            id: "workspace-id".into(),
+            pane_ids: vec![],
+            agent_statuses: vec![AgentStatus::None],
+            last_accessed_at: 1,
+        }]);
+        state.cached_displayed = cached.clone();
+        state.cached_total = 7;
+        state.cache_key = Some(42);
+
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 3);
+        assert_eq!(
+            state.handle_key(make_key(KeyCode::Esc, KeyModifiers::NONE), 3),
+            KeyAction::Continue
+        );
+        assert_eq!(state.search_query, "kept");
+        assert_eq!(state.selected_index, 1);
+        assert!(Rc::ptr_eq(&state.cached_displayed, &cached));
+        assert_eq!(state.cached_total, 7);
+        assert_eq!(state.cache_key, Some(42));
     }
 
     /// Ctrl+N walks down the list and wraps to the top

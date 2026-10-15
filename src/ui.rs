@@ -1,6 +1,6 @@
 use crate::format::*;
 use crate::models::{
-    AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
+    AgentStatus, AppState, CategoryTab, DisplayItem, InputMode, OtherSource, OthersFilter,
     WORKTREE_SEP,
 };
 use crate::theme::ThemeOverrides;
@@ -302,7 +302,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         list_chunks[1],
         &p,
     );
-    render_status_bar(frame, chunks[3], &p, narrow, &state.keybindings);
+    render_status_bar(frame, chunks[3], &p, state);
 }
 
 // ── Sub-renderers ───────────────────────────────────────────────────────────
@@ -361,7 +361,11 @@ fn render_search(
     total: usize,
     p: &Palette,
 ) {
-    let prefix = " > ";
+    let mode_label = match state.input_mode {
+        InputMode::Navigation => " NAV ",
+        InputMode::Filtering => " FILTER ",
+    };
+    let prefix = format!("{mode_label}> ");
     // In the All tab a filter prefix (`cmd `, `.`, …) is lifted out of the
     // query and shown as a badge chip; the rest is the live search text.
     let (filter, rest) = if state.current_category == CategoryTab::All {
@@ -370,7 +374,14 @@ fn render_search(
         (None, state.search_query.as_str())
     };
     let is_empty = rest.is_empty();
-    let text = if is_empty { "type to filter..." } else { rest };
+    let text = if is_empty {
+        match state.input_mode {
+            InputMode::Navigation => "press / to filter...",
+            InputMode::Filtering => "type to filter...",
+        }
+    } else {
+        rest
+    };
     let count_str = if is_empty {
         format!("{}", total)
     } else {
@@ -574,70 +585,71 @@ DisplayItem::Pane {
     );
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool, kb: &Keybindings) {
+fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, state: &AppState) {
     fn first(v: &[String]) -> &str {
         v.first().map(|s| s.as_str()).unwrap_or("?")
     }
-    let hints: Vec<Span> = if narrow {
-        vec![
-            Span::styled(
-                format!(" {}", first(&kb.next_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.previous_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.select)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("Go", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.dismiss)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("✕", Style::default().fg(p.overlay0)),
-        ]
-    } else {
-        vec![
-            Span::styled(
-                format!("   {}", first(&kb.next_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Next", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.previous_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Prev", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.move_up)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Move", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.select)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Focus", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.dismiss)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Close", Style::default().fg(p.overlay0)),
-        ]
+    let kb = &state.keybindings;
+    let hint = match (state.input_mode, area.width) {
+        (InputMode::Navigation, width) if width < 50 => {
+            format!(
+                " / Filter · j/k · {} Go · {} Close",
+                first(&kb.select),
+                first(&kb.dismiss)
+            )
+        }
+        (InputMode::Filtering, width) if width < 50 => format!(
+            " {} Nav · {}/{} · {} · {} Close",
+            first(&kb.dismiss),
+            first(&kb.move_up),
+            first(&kb.move_down),
+            first(&kb.select),
+            first(&kb.force_quit)
+        ),
+        (InputMode::Navigation, width) if width < 80 => format!(
+            " / Filter · {} Cat · j/k · {} Go · {} Close",
+            first(&kb.next_category),
+            first(&kb.select),
+            first(&kb.dismiss)
+        ),
+        (InputMode::Filtering, width) if width < 80 => format!(
+            " {} Nav · {} Cat · {}/{} · {} Go · {} Close",
+            first(&kb.dismiss),
+            first(&kb.next_category),
+            first(&kb.move_up),
+            first(&kb.move_down),
+            first(&kb.select),
+            first(&kb.force_quit)
+        ),
+        (InputMode::Navigation, _) => format!(
+            " / Filter  {} Category  j/k or {}/{} Move  {} Focus  {} Close",
+            first(&kb.next_category),
+            first(&kb.move_up),
+            first(&kb.move_down),
+            first(&kb.select),
+            first(&kb.dismiss)
+        ),
+        (InputMode::Filtering, _) => format!(
+            " {} Navigate  {} Category  {}/{} Move  {} Focus  {} Close",
+            first(&kb.dismiss),
+            first(&kb.next_category),
+            first(&kb.move_up),
+            first(&kb.move_down),
+            first(&kb.select),
+            first(&kb.force_quit)
+        ),
     };
     frame.render_widget(
-        Paragraph::new(Line::from(hints))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(p.surface0)),
-            )
-            .style(Style::default().fg(p.overlay0)),
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(p.accent),
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(p.surface0)),
+        )
+        .style(Style::default().fg(p.overlay0)),
         area,
     );
 }
@@ -936,6 +948,58 @@ fn row_other(
 }
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
 // are imported via `use crate::format::*;` at the top of this file.
+
+#[cfg(test)]
+mod status_hint_tests {
+    use super::*;
+    use crate::data::mock_nodes;
+    use crate::models::Keybindings;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn status_line(width: u16, mode: InputMode) -> String {
+        let backend = TestBackend::new(width, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut keybindings = Keybindings::default();
+        keybindings.force_quit = vec!["C-q".into()];
+        let mut state = AppState::new(mock_nodes(), keybindings, CategoryTab::all().to_vec());
+        state.input_mode = mode;
+
+        terminal
+            .draw(|frame| render(frame, &state, &[], 0))
+            .unwrap();
+        (0..width)
+            .map(|x| terminal.backend().buffer().get(x, 9).symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn status_hints_fit_at_narrow_standard_and_wide_widths() {
+        for width in [40, 60, 80] {
+            let navigation = status_line(width, InputMode::Navigation);
+            assert!(
+                navigation.contains("/ Filter"),
+                "width={width}: {navigation:?}"
+            );
+            assert!(
+                navigation.contains("Esc Close"),
+                "width={width}: {navigation:?}"
+            );
+
+            let filtering = status_line(width, InputMode::Filtering);
+            assert!(
+                filtering.contains("Esc Nav"),
+                "width={width}: {filtering:?}"
+            );
+            assert!(
+                filtering.contains("C-q Close"),
+                "width={width}: {filtering:?}"
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod palette_tests {

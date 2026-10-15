@@ -521,6 +521,13 @@ impl Keybindings {
     }
 }
 
+/// Whether keys control list navigation or edit the filter query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Navigation,
+    Filtering,
+}
+
 /// Global TUI application state.
 pub struct AppState {
     /// Configurable keybindings.
@@ -534,6 +541,8 @@ pub struct AppState {
     pub tabs: Vec<CategoryTab>,
     /// Search input text.
     pub search_query: String,
+    /// Current keyboard mode: list navigation or query editing.
+    pub input_mode: InputMode,
     /// Currently highlighted list index.
     pub selected_index: usize,
     /// Animation tick for spinner (incremented each render frame).
