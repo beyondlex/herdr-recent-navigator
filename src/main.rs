@@ -889,10 +889,16 @@ fn handle_pane_open() -> Result<()> {
     let pane_cols = std::env::var("HERDR_PANE_COLS")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
-        .or_else(|| ipc::fetch_layout_width().ok());
-    let narrow = pane_cols.map(|w| w < 80).unwrap_or(false);
+        .map(|w| (w, "HERDR_PANE_COLS"))
+        .or_else(|| ipc::fetch_layout_width().ok().map(|w| (w, "pane layout")));
+    if pane_cols.is_none() {
+        log::warn!(
+            "pane-open: no HERDR_PANE_COLS and `herdr pane layout` failed; assuming a wide client"
+        );
+    }
+    let narrow = pane_cols.map(|(w, _)| w < 80).unwrap_or(false);
     log::info!(
-        "pane-open: HERDR_PANE_COLS={:?} → {}",
+        "pane-open: pane_cols={:?} → {}",
         pane_cols,
         if narrow {
             "100% width"

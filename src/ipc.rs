@@ -942,7 +942,7 @@ mod tests {
         assert!(!map.contains_key("p-agent"));
     }
 
-    // ── pane content (content search) ──
+    // ── pane layout ──
 
     #[test]
     #[serial]
@@ -961,6 +961,8 @@ mod tests {
         mock_io::set_mock_outputs(vec![mock_io::make_failing_output()]);
         assert!(fetch_layout_width().is_err());
     }
+
+    // ── pane content (content search) ──
 
     #[test]
     #[serial]
