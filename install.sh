@@ -166,9 +166,9 @@ if command -v herdr &>/dev/null; then
 # theme = "terminal"
 
 # Uncomment and edit to customize internal navigation keys. Binding a letter to
-# a navigation action also switches on the vim-style input (j/k move, / starts
-# filtering, Esc steps back one layer); with the defaults below, typing filters
-# immediately and j, k and / stay ordinary search characters.
+# a navigation action also switches on the vim-style input (j/k move, h/l switch
+# tabs, / starts filtering, Esc steps back one layer); with the defaults below,
+# typing filters immediately and j, k, h, l and / stay ordinary search characters.
 # [keybindings]
 # next_category = ["Tab"]
 # previous_category = ["S-Tab"]

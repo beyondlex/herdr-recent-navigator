@@ -278,8 +278,9 @@ move_up = ["k", "Up"]
 move_down = ["j", "Down"]
 ```
 
-In modal use, `j`/`k` always move the list, `/` enters filter mode, and printable
-keys edit the query while filtering (so a query can still contain `j` and `k`).
+In modal use, `j`/`k` always move the list, `h`/`l` switch category tabs, `/`
+enters filter mode, and printable keys edit the query while filtering (so a query
+can still contain `j`, `k`, `h` and `l`).
 `Esc` steps back one layer at a time: leave the filter, then drop the query, then
 close. Nothing else to configure: which style you get follows from which keys you
 bound. The mode shows up in the bottom hints and in the prompt colour, never as a
@@ -326,6 +327,7 @@ tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 | `/` | Enter filter mode, keeping the current query |
 | Type text, `Backspace` | Edit the query while filtering |
 | `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
+| `h` / `l` | Previous / next category tab (outside filter mode) |
 | `Enter` | Focus selected item |
 | `Esc` | Leave filter mode keeping the query; again clears the query; again closes |
 | `Ctrl+C` | Close without focusing |
