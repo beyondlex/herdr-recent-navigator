@@ -366,6 +366,29 @@ pub fn fetch_focused_pane_info() -> Result<(String, String, String, String)> {
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct PaneLayoutResult {
+    layout: PaneLayout,
+}
+
+#[derive(Debug, Deserialize)]
+struct PaneLayout {
+    area: LayoutArea,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayoutArea {
+    width: u16,
+}
+
+/// Width in columns of the active tab's pane area, from `herdr pane layout`.
+/// Herdr no longer exports `HERDR_PANE_COLS` to plugin actions, so this is how
+/// the navigator learns it was opened on a narrow (phone) client.
+pub fn fetch_layout_width() -> Result<u16> {
+    let result: PaneLayoutResult = herdr_cli(&["pane", "layout"])?;
+    Ok(result.layout.area.width)
+}
+
 /// Fetch the label for a given tab_id.
 pub fn fetch_tab_name(tab_id: &str, workspace_id: &str) -> Option<String> {
     herdr_cli::<TabListResult>(&["tab", "list", "--workspace", workspace_id])
@@ -920,6 +943,24 @@ mod tests {
     }
 
     // ── pane content (content search) ──
+
+    #[test]
+    #[serial]
+    fn test_fetch_layout_width_reads_area_width() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_output(
+            r#"{"id":"cli:pane:layout","result":{"layout":{"area":{"height":45,"width":52,"x":0,"y":0},"focused_pane_id":"w5:pD","panes":[],"splits":[],"tab_id":"w5:tD","workspace_id":"w5","zoomed":false},"type":"pane_layout"}}"#,
+        )]);
+        assert_eq!(fetch_layout_width().unwrap(), 52);
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_layout_width_errors_when_herdr_fails() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_failing_output()]);
+        assert!(fetch_layout_width().is_err());
+    }
 
     #[test]
     #[serial]

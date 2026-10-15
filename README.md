@@ -42,6 +42,8 @@ navigable by keyboard.
 - **Follows your Herdr theme**: dark (TokyoNight) or light (One Light) palettes, or the host terminal palette when Herdr is set to `terminal`, with your `[theme.custom]` colour overrides applied on top
 - **Automatic tracking**: hooks into `workspace.focused`, `pane.focused`,
   `tab.focused` events to build `MRU` history
+- **Phone-friendly popup**: on a narrow client (under 80 columns, such as Herdr
+  on a phone) the popup opens full width instead of the manifest's 60%
 
 ## Install
 

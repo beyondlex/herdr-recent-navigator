@@ -883,17 +883,19 @@ fn handle_pane_open() -> Result<()> {
     }
 
     // Open a new navigator pane
-    // Use HERDR_PANE_COLS (set by herdr from estimate_pane_size) to detect
-    // narrow panes — if < 80 cols, use 90% popup width for mobile-friendly view.
+    // Detect narrow panes — if < 80 cols, use a full-width popup for a
+    // mobile-friendly view. Older Herdr set HERDR_PANE_COLS; current Herdr does
+    // not, so fall back to the active tab's width from `herdr pane layout`.
     let pane_cols = std::env::var("HERDR_PANE_COLS")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok());
+        .and_then(|s| s.parse::<u16>().ok())
+        .or_else(|| ipc::fetch_layout_width().ok());
     let narrow = pane_cols.map(|w| w < 80).unwrap_or(false);
     log::info!(
         "pane-open: HERDR_PANE_COLS={:?} → {}",
         pane_cols,
         if narrow {
-            "90% width"
+            "100% width"
         } else {
             "manifest width (60%)"
         },
@@ -911,7 +913,7 @@ fn handle_pane_open() -> Result<()> {
         "--focus",
     ];
     if narrow {
-        args.extend_from_slice(&["--width", "90%"]);
+        args.extend_from_slice(&["--width", "100%"]);
     }
     let output = ProcessCommand::new(&herdr_bin)
         .args(&args)
