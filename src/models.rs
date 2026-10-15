@@ -519,11 +519,38 @@ impl Keybindings {
         check!(backspace, Action::Backspace);
         None
     }
+
+    /// Whether moving the list is bound to a printable character (`j`/`k`, `l`,
+    /// …). Such a key cannot both move the list and be typed into the search
+    /// box, so those users get the modal filter and everyone else keeps
+    /// type-to-search.
+    pub fn has_printable_navigation(&self) -> bool {
+        let typable = |binding: &KeyBinding| {
+            matches!(binding.code, KeyCode::Char(_))
+                && matches!(binding.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        };
+        [
+            &self.move_up,
+            &self.move_down,
+            &self.next_category,
+            &self.previous_category,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.parse::<KeyBinding>().ok())
+        .any(|b| typable(&b))
+    }
 }
 
 /// Whether keys control list navigation or edit the filter query.
+///
+/// `TypeToSearch` is the default and has no modes: any printable key goes
+/// straight into the query. The two modal states only appear once a printable
+/// key is bound to a navigation action (`move_up = ["k"]`), where it cannot also
+/// be typed — see [`Keybindings::has_printable_navigation`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
+    TypeToSearch,
     Navigation,
     Filtering,
 }
