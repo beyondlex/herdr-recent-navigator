@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(long = "view", value_parser = ["workspaces", "tabs", "agents", "panes", "all", "others"])]
     pub view: Option<String>,
 
+    /// Order of the Agents tab.
+    #[arg(long = "sort", value_parser = ["recent", "grouped", "priority"])]
+    pub sort: Option<String>,
+
     /// Open the overlay pane (called by plugin_action keybinding).
     #[arg(long = "pane-open")]
     pub pane_open: bool,

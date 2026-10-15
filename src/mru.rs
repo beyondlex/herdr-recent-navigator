@@ -10,7 +10,7 @@ use nucleo_matcher::{Config, Matcher};
 // The import is kept here so `use super::*` in tests can access it.
 #[allow(unused_imports)]
 use crate::models::{
-    AgentStatus, CategoryTab, DisplayItem, NavigationNode, PaneOthers, WORKTREE_SEP,
+    AgentSort, AgentStatus, CategoryTab, DisplayItem, NavigationNode, PaneOthers, WORKTREE_SEP,
 };
 
 thread_local! {
@@ -41,6 +41,7 @@ pub struct BuildOptions<'a> {
     pub self_pane_id: Option<&'a str>,
     /// Pane runtime state for the All tab (cmd/ssh/cwd).
     pub others: &'a HashMap<String, PaneOthers>,
+    pub agent_sort: AgentSort,
 }
 
 /// Compute a lightweight cache key for the display list.
@@ -73,6 +74,7 @@ pub fn build_cache_key(
     opts.active_pane_id.hash(&mut hasher);
     opts.active_tab_id.hash(&mut hasher);
     opts.self_pane_id.hash(&mut hasher);
+    opts.agent_sort.label().hash(&mut hasher);
     hasher.finish()
 }
 
@@ -90,9 +92,13 @@ pub fn build_display_list(
             let merged_tab_ts = merge_tab_ts(&all, opts.tab_ts, opts.pane_ts);
             build_tab_items(&all, &merged_tab_ts, opts.active_tab_id)
         }
-        CategoryTab::Agents => {
-            build_agent_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id)
-        }
+        CategoryTab::Agents => build_agent_items(
+            &all,
+            opts.pane_ts,
+            opts.active_pane_id,
+            opts.self_pane_id,
+            opts.agent_sort,
+        ),
         CategoryTab::Panes => {
             build_pane_items(&all, opts.pane_ts, opts.active_pane_id, opts.self_pane_id)
         }
@@ -253,15 +259,31 @@ fn build_tab_items(
     items
 }
 
+/// `Grouped` keeps herdr's `pane list` order (workspace → tab → layout), which
+/// is what the sidebar shows in "grouped" mode; `Priority` is the sidebar's
+/// stable sort on top of that (status rank, then latest status change).
 fn build_agent_items(
     nodes: &[&NavigationNode],
     ts_map: &HashMap<String, u64>,
     exclude_pane_id: Option<&str>,
     self_pane_id: Option<&str>,
+    sort: AgentSort,
 ) -> Vec<DisplayItem> {
-    let mut items: Vec<DisplayItem> = nodes
+    let mut agents: Vec<&NavigationNode> = nodes
         .iter()
+        .copied()
         .filter(|n| n.agent_id.is_some() && exclude_pane(n, exclude_pane_id, self_pane_id))
+        .collect();
+    if sort == AgentSort::Priority {
+        agents.sort_by_key(|n| {
+            (
+                Reverse(n.agent_status.priority()),
+                Reverse(n.state_change_seq),
+            )
+        });
+    }
+    let mut items: Vec<DisplayItem> = agents
+        .iter()
         .map(|n| {
             let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
             DisplayItem::Agent {
@@ -274,7 +296,9 @@ fn build_agent_items(
             }
         })
         .collect();
-    mru_sort(&mut items);
+    if sort == AgentSort::Recent {
+        mru_sort(&mut items);
+    }
     items
 }
 
@@ -776,6 +800,7 @@ mod tests {
             agent_id: agent_id.map(String::from),
             agent_status,
             last_accessed_at,
+            state_change_seq: 0,
         }
     }
 
@@ -844,6 +869,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         assert!(
@@ -881,6 +907,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         // Auth-Service (ws-1) should be first, containing 2 panes and 1 agent
@@ -938,6 +965,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let names: Vec<String> = build_display_list(&nodes, &opts, &CategoryTab::Workspaces)
             .iter()
@@ -961,6 +989,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
         assert_eq!(items.len(), 3, "3 agent nodes");
@@ -971,6 +1000,84 @@ mod tests {
                 panic!("Expected Agent item");
             }
         }
+    }
+
+    fn agent_pane_ids(items: &[DisplayItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|it| match it {
+                DisplayItem::Agent { pane_id, .. } => pane_id.clone(),
+                other => panic!("Expected Agent item, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Agents tab, grouped: herdr's pane-list order wins over MRU
+    #[test]
+    fn test_build_agent_items_grouped_keeps_node_order() {
+        let nodes = sample_nodes();
+        let pane_ts: HashMap<String, u64> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.pane_id.clone(), i as u64 + 1))
+            .collect();
+        let empty = HashMap::new();
+        let empty_others = HashMap::new();
+        let opts = BuildOptions {
+            pane_ts: &pane_ts,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &empty_others,
+            agent_sort: AgentSort::Grouped,
+        };
+        let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
+        let expected: Vec<String> = nodes
+            .iter()
+            .filter(|n| n.agent_id.is_some())
+            .map(|n| n.pane_id.clone())
+            .collect();
+        assert_eq!(agent_pane_ids(&items), expected);
+        assert_ne!(
+            items[0].display_ts(),
+            items.iter().map(|i| i.display_ts()).max().unwrap()
+        );
+    }
+
+    /// Agents tab, priority: status rank desc, then latest status change,
+    /// then node order (herdr sidebar rules)
+    #[test]
+    fn test_build_agent_items_priority_matches_sidebar() {
+        let mut nodes = vec![
+            make_node("a", "ws", "WS", "T", AgentStatus::Idle, 0, Some("x")),
+            make_node("b", "ws", "WS", "T", AgentStatus::Blocked, 0, Some("x")),
+            make_node("c", "ws", "WS", "T", AgentStatus::Done, 0, Some("x")),
+            make_node("d", "ws", "WS", "T", AgentStatus::Blocked, 0, Some("x")),
+            make_node("e", "ws", "WS", "T", AgentStatus::Working, 0, Some("x")),
+            make_node("f", "ws", "WS", "T", AgentStatus::Done, 0, Some("x")),
+            make_node("g", "ws", "WS", "T", AgentStatus::None, 0, Some("x")),
+        ];
+        for (n, seq) in nodes.iter_mut().zip([9, 1, 5, 3, 7, 5, 2]) {
+            n.state_change_seq = seq;
+        }
+        let empty = HashMap::new();
+        let empty_others = HashMap::new();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &empty_others,
+            agent_sort: AgentSort::Priority,
+        };
+        let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
+        assert_eq!(agent_pane_ids(&items), ["d", "b", "c", "f", "e", "a", "g"]);
     }
 
     /// Pane items are flat (one per node)
@@ -988,6 +1095,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Panes);
         assert_eq!(items.len(), 5, "5 pane items");
@@ -1008,6 +1116,7 @@ mod tests {
             active_tab_id: Some("tab-pane-1"),
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Tabs);
         let remaining_names: Vec<&str> = items
@@ -1045,6 +1154,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Panes);
         assert_eq!(items.len(), 4, "4 panes after excluding pane-1");
@@ -1071,6 +1181,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::Agents);
         assert_eq!(items.len(), 2, "2 agents after excluding pane-1's agent");
@@ -1101,6 +1212,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &empty_others,
+            agent_sort: AgentSort::Recent,
         };
         let a = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
         let b = build_display_list(&nodes, &opts, &CategoryTab::Workspaces);
@@ -1149,6 +1261,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::All);
         // pane-4: ssh + cmd + cwd = 3 records; pane-5: cwd only (shell filtered) = 1.
@@ -1197,6 +1310,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &others,
+            agent_sort: AgentSort::Recent,
         };
         let items = build_display_list(&nodes, &opts, &CategoryTab::All);
         let ctx_of = |pane: &str, src: crate::models::OtherSource| -> String {
@@ -1353,6 +1467,7 @@ mod tests {
             agent_id: None,
             agent_status: AgentStatus::None,
             last_accessed_at: 900,
+            state_change_seq: 0,
         });
         let empty = HashMap::new();
         let mut contents = HashMap::new();
@@ -1395,6 +1510,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &others,
+            agent_sort: AgentSort::Recent,
         };
         let is_source = |items: &[DisplayItem], src: crate::models::OtherSource| {
             items
@@ -1464,6 +1580,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &others,
+            agent_sort: AgentSort::Recent,
         };
         let sources = |items: &[DisplayItem]| -> Vec<crate::models::OtherSource> {
             items
@@ -1545,6 +1662,7 @@ mod tests {
             active_tab_id: None,
             self_pane_id: None,
             others: &others,
+            agent_sort: AgentSort::Recent,
         };
 
         // `ws ` (empty needle): the workspace list.

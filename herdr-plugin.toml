@@ -38,6 +38,20 @@ contexts = ["global", "workspace"]
 command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "agents"]
 
 [[actions]]
+id = "focus-agents-priority"
+title = "Quick Focus: Agents (priority)"
+description = "Open navigator focused on Agents tab, ordered like the sidebar's priority mode"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "agents", "--sort", "priority"]
+
+[[actions]]
+id = "focus-agents-grouped"
+title = "Quick Focus: Agents (grouped)"
+description = "Open navigator focused on Agents tab, ordered like the sidebar's grouped mode"
+contexts = ["global", "workspace"]
+command = ["./target/release/herdr-recent-navigator", "--pane-open", "--view", "agents", "--sort", "grouped"]
+
+[[actions]]
 id = "focus-panes"
 title = "Quick Focus: Panes"
 description = "Open navigator focused on Panes tab"

@@ -19,6 +19,7 @@ impl AppState {
             // Start on the first configured tab (run_inner re-applies the
             // persisted / `--view` category afterwards).
             current_category: tabs.first().copied().unwrap_or(CategoryTab::Workspaces),
+            agent_sort: crate::models::AgentSort::Recent,
             tabs,
             search_query: String::new(),
             input_mode,

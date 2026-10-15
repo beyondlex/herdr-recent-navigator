@@ -23,6 +23,50 @@ impl AgentStatus {
     pub fn is_active(&self) -> bool {
         matches!(self, AgentStatus::Working)
     }
+
+    /// Same ranking as herdr's sidebar `status_priority` (higher sorts first).
+    pub fn priority(&self) -> u8 {
+        match self {
+            AgentStatus::Blocked => 4,
+            AgentStatus::Done => 3,
+            AgentStatus::Working => 2,
+            AgentStatus::Idle => 1,
+            AgentStatus::None => 0,
+        }
+    }
+}
+
+/// Order of the Agents tab. `Grouped` and `Priority` mirror herdr's sidebar
+/// sort toggle; `Recent` is the navigator's own MRU order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentSort {
+    #[default]
+    Recent,
+    Grouped,
+    Priority,
+}
+
+impl AgentSort {
+    pub fn label(&self) -> &'static str {
+        match self {
+            AgentSort::Recent => "recent",
+            AgentSort::Grouped => "grouped",
+            AgentSort::Priority => "priority",
+        }
+    }
+}
+
+impl std::str::FromStr for AgentSort {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "recent" => Ok(AgentSort::Recent),
+            "grouped" => Ok(AgentSort::Grouped),
+            "priority" => Ok(AgentSort::Priority),
+            _ => Err(format!("Unknown agent sort: {s}")),
+        }
+    }
 }
 
 /// Separates a linked worktree's repo/main-workspace label from its own label.
@@ -41,6 +85,9 @@ pub struct NavigationNode {
     pub agent_status: AgentStatus,
     /// Millisecond timestamp for MRU sorting.
     pub last_accessed_at: u64,
+    /// Herdr's per-agent status-change counter, for the priority sort.
+    #[serde(default)]
+    pub state_change_seq: u64,
 }
 
 /// The source kind of an "All" row: which runtime state dimension a pane
@@ -563,6 +610,8 @@ pub struct AppState {
     pub nodes: Vec<NavigationNode>,
     /// Currently selected category tab.
     pub current_category: CategoryTab,
+    /// Order of the Agents tab.
+    pub agent_sort: AgentSort,
     /// Configured category tabs — display order and visibility combined
     /// (parsed from `[navigator] tabs`). Always non-empty.
     pub tabs: Vec<CategoryTab>,
@@ -595,6 +644,10 @@ fn state_file_path() -> PathBuf {
     crate::tracker::state_dir_or_default().join("state.json")
 }
 
+fn agent_sort_file_path() -> PathBuf {
+    crate::tracker::state_dir_or_default().join("agent-sort")
+}
+
 impl AppState {
     /// Persist the current category to a temp file so it survives restarts.
     pub fn save_last_category(&self) {
@@ -623,6 +676,22 @@ impl AppState {
         {
             log::error!("Failed to save category: {e}");
         }
+    }
+
+    /// Save the Agents tab order for the navigator pane that `--pane-open`
+    /// is about to launch (the pane command itself takes no arguments).
+    pub fn save_agent_sort(sort: AgentSort) {
+        if let Err(e) = std::fs::write(agent_sort_file_path(), sort.label()) {
+            log::error!("Failed to save agent sort: {e}");
+        }
+    }
+
+    pub fn load_agent_sort() -> Option<AgentSort> {
+        std::fs::read_to_string(agent_sort_file_path())
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
     }
 }
 
