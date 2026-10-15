@@ -175,6 +175,14 @@ impl AppState {
                     (InputMode::Navigation, KeyCode::Char('k'), KeyModifiers::NONE) => {
                         self.select_prev(list_len);
                     }
+                    (InputMode::Navigation, KeyCode::Char('h'), KeyModifiers::NONE) => {
+                        self.cycle_category(-1);
+                        self.selected_index = 0;
+                    }
+                    (InputMode::Navigation, KeyCode::Char('l'), KeyModifiers::NONE) => {
+                        self.cycle_category(1);
+                        self.selected_index = 0;
+                    }
                     _ => {}
                 }
                 KeyAction::Continue
@@ -367,6 +375,29 @@ mod tests {
         state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
         assert_eq!(state.input_mode, InputMode::Filtering);
         assert_eq!(state.search_query, "kep");
+    }
+
+    #[test]
+    fn test_navigation_mode_h_l_cycle_categories_alongside_tab() {
+        let mut state = make_vim_state();
+        let first = state.current_category;
+        state.selected_index = 2;
+
+        state.handle_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE), 4);
+        assert_ne!(state.current_category, first);
+        assert_eq!(state.selected_index, 0);
+        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 4);
+        assert_eq!(state.current_category, first);
+
+        // Tab keeps working next to l.
+        state.handle_key(make_key(KeyCode::Tab, KeyModifiers::NONE), 4);
+        assert_ne!(state.current_category, first);
+
+        // While filtering, h and l are query text.
+        state.handle_key(make_key(KeyCode::Char('/'), KeyModifiers::NONE), 4);
+        state.handle_key(make_key(KeyCode::Char('h'), KeyModifiers::NONE), 4);
+        state.handle_key(make_key(KeyCode::Char('l'), KeyModifiers::NONE), 4);
+        assert_eq!(state.search_query, "hl");
     }
 
     /// Test E: Tab cycles categories correctly

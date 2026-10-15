@@ -326,6 +326,7 @@ tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 | `/` | Enter filter mode, keeping the current query |
 | Type text, `Backspace` | Edit the query while filtering |
 | `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
+| `h` / `l` | Previous / next category tab (outside filter mode) |
 | `Enter` | Focus selected item |
 | `Esc` | Leave filter mode keeping the query; again clears the query; again closes |
 | `Ctrl+C` | Close without focusing |
