@@ -567,11 +567,273 @@ fn build_content_source_items(
     items
 }
 
+/// A non-jumpable status row for the `port `/`pid ` results. `reason` is
+/// rendered in red after `detail`; `context` carries the owning command.
+fn hint_row(
+    source: crate::models::OtherSource,
+    detail: &str,
+    reason: &str,
+    context: &str,
+) -> DisplayItem {
+    DisplayItem::Hint {
+        source,
+        detail: detail.to_string(),
+        reason: reason.to_string(),
+        context: context.to_string(),
+        last_accessed_at: 0,
+    }
+}
+
+/// The pane owning `target`'s process, from the locator snapshot: walk the
+/// target's parent chain up to a pane shell pid (from the per-pane cache).
+/// `None` when the pid escaped every pane (daemonized) or Herdr isn't its
+/// ancestor (Docker Desktop, system services) — there is nothing focusable.
+fn pane_owning_pid(
+    target: u32,
+    others: &HashMap<String, PaneOthers>,
+    locator: &crate::models::PidLocator,
+) -> Option<String> {
+    let ppid_of: HashMap<u32, u32> = locator
+        .procs
+        .iter()
+        .filter_map(|(pid, snap)| snap.ppid.map(|pp| (*pid, pp)))
+        .collect();
+    let pane_shells: HashMap<u32, String> = others
+        .iter()
+        .filter_map(|(pane_id, o)| o.shell_pid.map(|sp| (sp, pane_id.clone())))
+        .collect();
+    crate::others::pane_for_pid(target, &ppid_of, &pane_shells)
+}
+
+/// The All-tab node for a pid-query hit: the pane must exist, not be an
+/// agent pane, and pass the usual exclusions.
+fn pid_query_node<'a>(
+    nodes: &'a [NavigationNode],
+    pane_id: &str,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+) -> Option<&'a NavigationNode> {
+    let n = nodes.iter().find(|n| n.pane_id == pane_id)?;
+    if n.agent_id.is_some() {
+        return None;
+    }
+    exclude_pane(&n, exclude_pane_id, self_pane_id).then_some(n)
+}
+
+/// All-tab rows for `pid <N>`: the one pane whose process tree contains N.
+/// N itself may be a pane shell (exact match) or any descendant (found by
+/// walking its parent chain). When no pane owns N the row says why instead
+/// of going silently empty — process gone, snapshot unavailable, or known
+/// but not in any pane (a hint row, since there is nothing to jump to).
+#[allow(clippy::too_many_arguments)]
+fn build_pid_items(
+    nodes: &[NavigationNode],
+    others: &HashMap<String, PaneOthers>,
+    locator: &crate::models::PidLocator,
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+    needle: &str,
+) -> Vec<DisplayItem> {
+    let Ok(target) = needle.trim().parse::<u32>() else {
+        return Vec::new();
+    };
+    if let Some(pane_id) = pane_owning_pid(target, others, locator) {
+        // A pane owns it — but honor the usual exclusions; a hidden pane
+        // (the navigator's own, the active one) simply lists nothing.
+        let Some(n) = pid_query_node(nodes, &pane_id, exclude_pane_id, self_pane_id) else {
+            return Vec::new();
+        };
+        let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
+        let detail = locator
+            .procs
+            .get(&target)
+            .map(|p| p.command.clone())
+            .unwrap_or_else(|| format!("pid {target}"));
+        return vec![DisplayItem::Other {
+            pane_id: n.pane_id.clone(),
+            pane_name: n.pane_name.clone().unwrap_or_else(|| n.pane_id.clone()),
+            tab: n.tab_name.clone(),
+            workspace: n.workspace_name.clone(),
+            source: crate::models::OtherSource::Pid,
+            detail,
+            context: "-".to_string(),
+            last_accessed_at: ts,
+        }];
+    }
+
+    // No pane owns it — explain instead of an unexplained empty list.
+    if locator.procs.is_empty() {
+        return vec![hint_row(
+            crate::models::OtherSource::Pid,
+            &format!("pid {target}"),
+            "ps/lsof unavailable",
+            "",
+        )];
+    }
+    if !locator.procs.contains_key(&target) {
+        return vec![hint_row(
+            crate::models::OtherSource::Pid,
+            &format!("pid {target}"),
+            "no such process",
+            "",
+        )];
+    }
+    if others.is_empty() {
+        // No pane shell pids fetched yet — attribution may still arrive with
+        // the next refresh, so "not in any pane" is not established.
+        return Vec::new();
+    }
+    let detail = locator
+        .procs
+        .get(&target)
+        .map(|p| p.command.clone())
+        .unwrap_or_else(|| format!("pid {target}"));
+    vec![hint_row(
+        crate::models::OtherSource::Pid,
+        &detail,
+        "not in any pane",
+        "",
+    )]
+}
+
+/// The focusable port row for one listening-socket owner: `Some` when the
+/// owner's process tree reaches a visible pane. `None` covers both "owner
+/// outside every pane" (caller may hint about it) and "owner's pane hidden
+/// by exclusions" (caller stays silent).
+#[allow(clippy::too_many_arguments)]
+fn attributed_port_row(
+    owner: &crate::models::PortOwner,
+    nodes: &[NavigationNode],
+    others: &HashMap<String, PaneOthers>,
+    locator: &crate::models::PidLocator,
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+) -> Option<DisplayItem> {
+    let pane_id = pane_owning_pid(owner.pid, others, locator)?;
+    let n = pid_query_node(nodes, &pane_id, exclude_pane_id, self_pane_id)?;
+    let ts = ts_map.get(&n.pane_id).copied().unwrap_or(0);
+    let context = locator
+        .procs
+        .get(&owner.pid)
+        .map(|p| p.command.clone())
+        .unwrap_or_else(|| format!("pid {}", owner.pid));
+    Some(DisplayItem::Other {
+        pane_id: n.pane_id.clone(),
+        pane_name: n.pane_name.clone().unwrap_or_else(|| n.pane_id.clone()),
+        tab: n.tab_name.clone(),
+        workspace: n.workspace_name.clone(),
+        source: crate::models::OtherSource::Port,
+        detail: owner.addr.clone(),
+        context,
+        last_accessed_at: ts,
+    })
+}
+
+/// All-tab rows for `port <N>`: every non-agent pane owning a listening TCP
+/// socket on N, one row per owner process (Detail = the listen address,
+/// Context = the owner's command). Owners outside every pane — Docker
+/// Desktop's port proxy, orphaned dev servers — render as non-jumpable hint
+/// rows instead of vanishing, so an empty result means "nothing listens on
+/// this port", never "the lookup found something it cannot show". An empty
+/// needle lists every pane-mapped port (the "who is serving" overview) and
+/// emits no hints — unattributed system listeners would flood it.
+#[allow(clippy::too_many_arguments)]
+fn build_port_items(
+    nodes: &[NavigationNode],
+    others: &HashMap<String, PaneOthers>,
+    locator: &crate::models::PidLocator,
+    ts_map: &HashMap<String, u64>,
+    exclude_pane_id: Option<&str>,
+    self_pane_id: Option<&str>,
+    needle: &str,
+) -> Vec<DisplayItem> {
+    let needle = needle.trim();
+    let Some(port) = needle.parse::<u16>().ok() else {
+        if needle.is_empty() {
+            let mut ports: Vec<u16> = locator.listeners.keys().copied().collect();
+            ports.sort_unstable();
+            let mut items = Vec::new();
+            for port in ports {
+                for owner in locator.listeners.get(&port).into_iter().flatten() {
+                    if let Some(row) = attributed_port_row(
+                        owner,
+                        nodes,
+                        others,
+                        locator,
+                        ts_map,
+                        exclude_pane_id,
+                        self_pane_id,
+                    ) {
+                        items.push(row);
+                    }
+                }
+            }
+            mru_sort(&mut items);
+            return items;
+        }
+        return Vec::new();
+    };
+
+    // Explicit port: pane rows first, then hints for anything unattributed.
+    if locator.listeners.is_empty() {
+        return vec![hint_row(
+            crate::models::OtherSource::Port,
+            &format!("port {port}"),
+            "ps/lsof unavailable",
+            "",
+        )];
+    }
+    let mut items = Vec::new();
+    let mut unattributed: Vec<&crate::models::PortOwner> = Vec::new();
+    for owner in locator.listeners.get(&port).into_iter().flatten() {
+        match attributed_port_row(
+            owner,
+            nodes,
+            others,
+            locator,
+            ts_map,
+            exclude_pane_id,
+            self_pane_id,
+        ) {
+            Some(row) => items.push(row),
+            None => unattributed.push(owner),
+        }
+    }
+    if !unattributed.is_empty() && !others.is_empty() {
+        for owner in &unattributed {
+            let command = locator
+                .procs
+                .get(&owner.pid)
+                .map(|p| p.command.clone())
+                .unwrap_or_else(|| format!("pid {}", owner.pid));
+            items.push(hint_row(
+                crate::models::OtherSource::Port,
+                &owner.addr,
+                "not in any pane",
+                &command,
+            ));
+        }
+    }
+    if items.is_empty() && unattributed.is_empty() {
+        items.push(hint_row(
+            crate::models::OtherSource::Port,
+            &format!("port {port}"),
+            "nothing listening",
+            "",
+        ));
+    }
+    mru_sort(&mut items);
+    items
+}
+
 /// Base list for the All tab: pane-state records (cmd/ssh/cwd) and
 /// pane-buffer content matches in ONE list. A plain query searches both —
 /// buffers by substring, state rows fuzzy. The query may carry a narrowing
 /// filter prefix (`.` = buffer content only, `cmd `/`ssh `/`cwd `/`file `/
-/// `term ` = that source only, `ws `/`tab `/`pane ` = the workspace, tab or
+/// `term ` = that source only, `port `/`pid ` = panes owning a listening
+/// port / containing a process, `ws `/`tab `/`pane ` = the workspace, tab or
 /// pane list).
 ///
 /// Returns the query to fuzzy-rank and highlight with, plus the unranked
@@ -580,11 +842,14 @@ fn build_content_source_items(
 /// `file `/`term ` show every buffer pane of that kind with a preview, and
 /// `ws `/`tab `/`pane ` show every workspace/tab/pane (MRU). The bare `.`
 /// content filter needs a needle (an excerpt needs a match), so it stays
-/// empty.
+/// empty. `port ` also lists with an empty needle (every pane-mapped port);
+/// `pid ` needs a number, so it stays empty. Port/pid rows are exact
+/// matches, so their ranked query is always empty — no fuzzy re-ranking.
 pub fn build_others_base(
     nodes: &[NavigationNode],
     contents: &HashMap<String, String>,
     others: &HashMap<String, PaneOthers>,
+    locator: &crate::models::PidLocator,
     opts: &BuildOptions,
     query: &str,
 ) -> (String, Vec<DisplayItem>) {
@@ -635,6 +900,26 @@ pub fn build_others_base(
             }
             _ => by_source(build_display_list(nodes, opts, &CategoryTab::All), src),
         },
+        // `port ` / `pid ` resolve against the locator snapshot: exact rows,
+        // no fuzzy stage.
+        Some(crate::models::OthersFilter::Port) => build_port_items(
+            nodes,
+            others,
+            locator,
+            opts.pane_ts,
+            opts.active_pane_id,
+            opts.self_pane_id,
+            needle,
+        ),
+        Some(crate::models::OthersFilter::Pid) => build_pid_items(
+            nodes,
+            others,
+            locator,
+            opts.pane_ts,
+            opts.active_pane_id,
+            opts.self_pane_id,
+            needle,
+        ),
         // `ws ` / `tab ` / `pane ` swap the list to the matching dimension's
         // entities, so typing a name fuzzy-filters down to it directly.
         Some(crate::models::OthersFilter::Workspace) => {
@@ -655,10 +940,12 @@ pub fn build_others_base(
             items
         }
     };
-    let ranked_query = if filter.is_some() {
-        needle.to_string()
-    } else {
-        query.to_string()
+    let ranked_query = match filter {
+        Some(crate::models::OthersFilter::Port) | Some(crate::models::OthersFilter::Pid) => {
+            String::new()
+        }
+        Some(_) => needle.to_string(),
+        None => query.to_string(),
     };
     (ranked_query, items)
 }
@@ -746,6 +1033,9 @@ impl DisplayItem {
                 last_accessed_at, ..
             }
             | DisplayItem::Other {
+                last_accessed_at, ..
+            }
+            | DisplayItem::Hint {
                 last_accessed_at, ..
             } => *last_accessed_at,
         }
@@ -1120,6 +1410,7 @@ mod tests {
                 cwd: Some("/repo/auth/config".into()),
                 command: Some("ssh -p 2222 deploy@10.1.2.3".into()),
                 ssh_target: Some("deploy@10.1.2.3:2222".into()),
+                shell_pid: Some(400),
             },
         );
         map.insert(
@@ -1128,9 +1419,73 @@ mod tests {
                 cwd: Some("/infra/prod".into()),
                 command: Some("-zsh".into()),
                 ssh_target: None,
+                shell_pid: Some(410),
             },
         );
         map
+    }
+
+    /// Locator snapshot for `port `/`pid ` tests: pane-4's shell is pid 400
+    /// with vite (500) listening on :3000; pane-5's shell is 410; port 22 is
+    /// owned by pid 1, outside every pane.
+    fn locator_fixture() -> crate::models::PidLocator {
+        let mut procs = HashMap::new();
+        procs.insert(
+            400,
+            crate::models::ProcSnapshot {
+                ppid: Some(100),
+                command: "-zsh".into(),
+            },
+        );
+        procs.insert(
+            500,
+            crate::models::ProcSnapshot {
+                ppid: Some(400),
+                command: "node vite.js".into(),
+            },
+        );
+        procs.insert(
+            410,
+            crate::models::ProcSnapshot {
+                ppid: Some(100),
+                command: "-zsh".into(),
+            },
+        );
+        // Orphaned dev server: reparented to launchd, no pane behind it.
+        procs.insert(
+            600,
+            crate::models::ProcSnapshot {
+                ppid: Some(1),
+                command: "astro dev".into(),
+            },
+        );
+        let mut listeners = HashMap::new();
+        listeners.insert(
+            3000,
+            vec![crate::models::PortOwner {
+                pid: 500,
+                addr: "*:3000".into(),
+            }],
+        );
+        listeners.insert(
+            22,
+            vec![crate::models::PortOwner {
+                pid: 1,
+                addr: "*:22".into(),
+            }],
+        );
+        listeners.insert(
+            4321,
+            vec![crate::models::PortOwner {
+                pid: 600,
+                addr: "[::1]:4321".into(),
+            }],
+        );
+        crate::models::PidLocator { procs, listeners }
+    }
+
+    fn no_locator() -> crate::models::PidLocator {
+        crate::models::PidLocator::default()
     }
 
     /// All emits one record per (pane × source); agent panes and login
@@ -1238,11 +1593,21 @@ mod tests {
         let mut others: HashMap<String, PaneOthers> = HashMap::new();
         others.insert(
             "pane-4".into(),
-            PaneOthers { cwd: None, command: Some("nvim src/main.rs".into()), ssh_target: None },
+            PaneOthers {
+                cwd: None,
+                command: Some("nvim src/main.rs".into()),
+                ssh_target: None,
+                shell_pid: None,
+            },
         );
         others.insert(
             "pane-5".into(),
-            PaneOthers { cwd: None, command: Some("-zsh".into()), ssh_target: None },
+            PaneOthers {
+                cwd: None,
+                command: Some("-zsh".into()),
+                ssh_target: None,
+                shell_pid: None,
+            },
         );
 
         let items = build_content_items(&nodes, &contents, &others, &empty, None, Some("pane-5"), "deployservice");
@@ -1300,6 +1665,7 @@ mod tests {
                 cwd: Some("/repo/auth".into()),
                 command: Some("nvim +328 src/main.rs".into()),
                 ssh_target: None,
+                shell_pid: None,
             },
         );
         let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "deploy");
@@ -1321,6 +1687,7 @@ mod tests {
                 cwd: None,
                 command: Some("hx".into()),
                 ssh_target: None,
+                shell_pid: None,
             },
         );
         contents.insert("pane-5".to_string(), "term output deploy\n".to_string());
@@ -1360,7 +1727,12 @@ mod tests {
         let mut others = HashMap::new();
         others.insert(
             "pane-6".into(),
-            PaneOthers { cwd: None, command: Some("vim dump.log".into()), ssh_target: None },
+            PaneOthers {
+                cwd: None,
+                command: Some("vim dump.log".into()),
+                ssh_target: None,
+                shell_pid: None,
+            },
         );
         let items = build_content_items(&nodes, &contents, &others, &empty, None, None, "token");
         assert_eq!(items.len(), 1);
@@ -1403,7 +1775,8 @@ mod tests {
         };
 
         // Plain query: state records AND the buffer match are both present.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "deploy");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "deploy");
         assert_eq!(q, "deploy");
         assert!(
             is_source(&items, crate::models::OtherSource::Ssh),
@@ -1415,7 +1788,8 @@ mod tests {
         );
 
         // Leading `.`: buffer content only.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, ".deploy");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, ".deploy");
         assert_eq!(q, "deploy");
         assert!(is_source(&items, crate::models::OtherSource::Terminal));
         assert!(
@@ -1424,12 +1798,12 @@ mod tests {
         );
 
         // Empty query: state records alone (no needle, no excerpts).
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "");
+        let (q, items) = build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "");
         assert_eq!(q, "");
         assert_eq!(items.len(), 4, "ssh+cmd+cwd of pane-4, cwd of pane-5");
 
         // Bare `.`: empty needle, nothing to show.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, ".");
+        let (q, items) = build_others_base(&nodes, &contents, &others, &no_locator(), &opts, ".");
         assert_eq!(q, "");
         assert!(items.is_empty());
     }
@@ -1453,6 +1827,7 @@ mod tests {
                 cwd: Some("/repo/auth".into()),
                 command: Some("nvim src/main.rs".into()),
                 ssh_target: Some("deploy@10.1.2.3:2222".into()),
+                shell_pid: None,
             },
         );
         let opts = BuildOptions {
@@ -1476,23 +1851,39 @@ mod tests {
         };
 
         // `cmd ` with no needle: every cmd row, nothing else.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "cmd ");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "cmd ");
         assert_eq!(q, "");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::Cmd]);
 
         // `ssh deploy`: ssh rows only, ranked by the remaining text.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ssh deploy");
+        let (q, items) = build_others_base(
+            &nodes,
+            &contents,
+            &others,
+            &no_locator(),
+            &opts,
+            "ssh deploy",
+        );
         assert_eq!(q, "deploy");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::Ssh]);
 
         // `file deploy`: content match typed `file`, no state rows.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "file deploy");
+        let (q, items) = build_others_base(
+            &nodes,
+            &contents,
+            &others,
+            &no_locator(),
+            &opts,
+            "file deploy",
+        );
         assert_eq!(q, "deploy");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::File]);
 
         // `file ` with no needle: every file-editing pane lists, detail falls
         // back to the edited path (no match to excerpt around).
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "file ");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "file ");
         assert_eq!(q, "");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::File]);
         match &items[0] {
@@ -1512,7 +1903,8 @@ mod tests {
             "pane-5".to_string(),
             "  \nls: No such file or directory\n".to_string(),
         );
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "term ");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "term ");
         assert_eq!(q, "");
         assert_eq!(sources(&items), vec![crate::models::OtherSource::Terminal]);
         match &items[0] {
@@ -1548,7 +1940,7 @@ mod tests {
         };
 
         // `ws ` (empty needle): the workspace list.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws ");
+        let (q, items) = build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "ws ");
         assert_eq!(q, "");
         let names: Vec<&str> = items
             .iter()
@@ -1568,14 +1960,16 @@ mod tests {
         );
 
         // `tab ` (empty needle): the tab list.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab ");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "tab ");
         assert_eq!(q, "");
         assert!(!items.is_empty());
         assert!(items.iter().all(|it| matches!(it, DisplayItem::Tab { .. })));
 
         // Fuzzy-filter the two lists with a needle (ranked_query is consumed
         // by search_display_items, exactly as in the app event loop).
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws auth");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "ws auth");
         assert_eq!(q, "auth");
         let ranked = search_display_items(&items, &q);
         let names: Vec<&str> = ranked
@@ -1587,7 +1981,8 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["Auth-Service"]);
 
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab prod");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "tab prod");
         assert_eq!(q, "prod");
         let ranked = search_display_items(&items, &q);
         let names: Vec<&str> = ranked
@@ -1599,7 +1994,14 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["Prod"]);
 
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "pane pane-4");
+        let (q, items) = build_others_base(
+            &nodes,
+            &contents,
+            &others,
+            &no_locator(),
+            &opts,
+            "pane pane-4",
+        );
         assert_eq!(q, "pane-4");
         let ranked = search_display_items(&items, &q);
         let names: Vec<&str> = ranked
@@ -1612,12 +2014,284 @@ mod tests {
         assert_eq!(names, vec!["pane-4"]);
 
         // No workspace/tab/pane matches the text: empty result.
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "ws nope");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "ws nope");
         assert!(search_display_items(&items, &q).is_empty());
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "tab nope");
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "tab nope");
         assert!(search_display_items(&items, &q).is_empty());
-        let (q, items) = build_others_base(&nodes, &contents, &others, &opts, "pane nope");
+        let (q, items) = build_others_base(
+            &nodes,
+            &contents,
+            &others,
+            &no_locator(),
+            &opts,
+            "pane nope",
+        );
         assert!(search_display_items(&items, &q).is_empty());
+    }
+
+    /// `pid <N>` rows: a descendant of a pane shell resolves to its pane,
+    /// a pane shell matches directly, and anything unattributable (unknown,
+    /// non-numeric, orphaned) lists nothing.
+    #[test]
+    fn test_build_others_base_pid_filter() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let contents = HashMap::new();
+        let others = others_map(); // pane-4 shell 400, pane-5 shell 410
+        let locator = locator_fixture();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+
+        // pid 500 = vite, a descendant of pane-4's shell: walk finds pane-4.
+        let (q, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "pid 500");
+        assert_eq!(q, "");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Other {
+                pane_id,
+                source,
+                detail,
+                context,
+                ..
+            } => {
+                assert_eq!(pane_id, "pane-4");
+                assert_eq!(*source, crate::models::OtherSource::Pid);
+                assert_eq!(detail, "node vite.js");
+                assert_eq!(context, "-");
+            }
+            _ => panic!("expected Other item"),
+        }
+
+        // A pane shell pid matches exactly.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "pid 410");
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], DisplayItem::Other { pane_id, .. } if pane_id == "pane-5"));
+
+        // Unknown pid, non-numeric, empty: hint or nothing, never a pane row.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "pid 999");
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0], DisplayItem::Hint { reason, .. } if reason == "no such process")
+        );
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "pid 100");
+        assert!(
+            matches!(&items[0], DisplayItem::Hint { reason, .. } if reason == "no such process")
+        );
+        for needle in ["pid vite", "pid "] {
+            assert!(
+                build_others_base(&nodes, &contents, &others, &locator, &opts, needle)
+                    .1
+                    .is_empty(),
+                "no rows expected for {needle:?}"
+            );
+        }
+
+        // Known pid with no pane behind it (reparented to launchd): a hint
+        // row naming the command, not an empty list.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "pid 600");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Hint {
+                source,
+                detail,
+                reason,
+                ..
+            } => {
+                assert_eq!(*source, crate::models::OtherSource::Pid);
+                assert_eq!(detail, "astro dev");
+                assert_eq!(reason, "not in any pane");
+            }
+            _ => panic!("expected Hint item"),
+        }
+
+        // Empty locator: the snapshot hint, so a broken ps/lsof is visible.
+        let (_, items) =
+            build_others_base(&nodes, &contents, &others, &no_locator(), &opts, "pid 600");
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Hint { reason, .. } if reason == "ps/lsof unavailable"
+        ));
+
+        // Exclusions apply: the matched pane hidden by self_pane_id lists nothing.
+        let opts_self = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: Some("pane-4"),
+            others: &others,
+        };
+        assert!(
+            build_others_base(&nodes, &contents, &others, &locator, &opts_self, "pid 500")
+                .1
+                .is_empty()
+        );
+    }
+
+    /// `port <N>` rows: the listening port's owner maps to its pane via the
+    /// process table; ports owned outside every pane show nothing; an empty
+    /// needle lists every pane-mapped port.
+    #[test]
+    fn test_build_others_base_port_filter() {
+        let nodes = sample_nodes();
+        let empty = HashMap::new();
+        let contents = HashMap::new();
+        let others = others_map();
+        let locator = locator_fixture();
+        let opts = BuildOptions {
+            pane_ts: &empty,
+            tab_ts: &empty,
+            ws_ts: &empty,
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+            self_pane_id: None,
+            others: &others,
+        };
+
+        let (q, items) =
+            build_others_base(&nodes, &contents, &others, &locator, &opts, "port 3000");
+        assert_eq!(q, "");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Other {
+                pane_id,
+                source,
+                detail,
+                context,
+                ..
+            } => {
+                assert_eq!(pane_id, "pane-4");
+                assert_eq!(*source, crate::models::OtherSource::Port);
+                assert_eq!(detail, "*:3000", "detail is the listen address");
+                assert_eq!(context, "node vite.js", "context is the owner command");
+            }
+            _ => panic!("expected Other item"),
+        }
+
+        // Port 22 is owned by pid 1, outside every pane: a dim hint row with
+        // the owner command, not an empty list.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "port 22");
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            DisplayItem::Hint {
+                source,
+                detail,
+                reason,
+                context,
+                ..
+            } => {
+                assert_eq!(*source, crate::models::OtherSource::Port);
+                assert_eq!(detail, "*:22");
+                assert_eq!(reason, "not in any pane");
+                assert_eq!(context, "pid 1");
+            }
+            _ => panic!("expected Hint item"),
+        }
+
+        // The orphaned-server scenario: port 4321's owner reparented to
+        // launchd surfaces as a hint naming the command.
+        let (_, items) =
+            build_others_base(&nodes, &contents, &others, &locator, &opts, "port 4321");
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Hint { detail, reason, context, .. }
+                if detail == "[::1]:4321"
+                    && reason == "not in any pane"
+                    && context == "astro dev"
+        ));
+
+        // No listener at all on the queried port: a hint says so.
+        let (_, items) =
+            build_others_base(&nodes, &contents, &others, &locator, &opts, "port 9999");
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Hint { detail, reason, .. }
+                if detail == "port 9999" && reason == "nothing listening"
+        ));
+
+        // Mixed owners: the pane-backed one stays a focusable row, the
+        // orphan lands below it as a hint (hint sort key keeps it last).
+        let mut mixed = locator_fixture();
+        mixed.listeners.insert(
+            8080,
+            vec![
+                crate::models::PortOwner {
+                    pid: 500,
+                    addr: "127.0.0.1:8080".into(),
+                },
+                crate::models::PortOwner {
+                    pid: 600,
+                    addr: "*:8080".into(),
+                },
+            ],
+        );
+        let (_, items) = build_others_base(&nodes, &contents, &others, &mixed, &opts, "port 8080");
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Other { pane_id, detail, .. }
+                if pane_id == "pane-4" && detail == "127.0.0.1:8080"
+        ));
+        assert!(matches!(
+            &items[1],
+            DisplayItem::Hint { detail, reason, .. }
+                if detail == "*:8080" && reason == "not in any pane"
+        ));
+
+        // While the per-pane shell pids are still loading, unattributed
+        // owners stay silent — "not in any pane" is not established yet.
+        let (_, items) = build_others_base(
+            &nodes,
+            &contents,
+            &HashMap::new(),
+            &locator,
+            &opts,
+            "port 4321",
+        );
+        assert!(items.is_empty());
+
+        // Non-numeric needle: no rows.
+        assert!(
+            build_others_base(&nodes, &contents, &others, &locator, &opts, "port http")
+                .1
+                .is_empty()
+        );
+
+        // Empty needle: every pane-mapped port lists — :3000 but not :22/:4321.
+        let (_, items) = build_others_base(&nodes, &contents, &others, &locator, &opts, "port ");
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Other { detail, .. } if detail == "*:3000"
+        ));
+
+        // Empty locator (ps/lsof unavailable): the snapshot hint, no panic.
+        let (_, items) = build_others_base(
+            &nodes,
+            &contents,
+            &others,
+            &no_locator(),
+            &opts,
+            "port 3000",
+        );
+        assert!(matches!(
+            &items[0],
+            DisplayItem::Hint { reason, .. } if reason == "ps/lsof unavailable"
+        ));
     }
 
     /// All ranking must favor the detail column: a workspace/tab/pane-only

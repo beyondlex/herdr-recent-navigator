@@ -649,6 +649,13 @@ fn run_event_loop(
     let others_in_flight = Arc::new(AtomicBool::new(false));
     let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
 
+    // ── Lazy pid/port locator for `port `/`pid ` queries in the All tab ──
+    // OS process table + listening TCP ports; one ps + one lsof per
+    // refresh, never per keystroke.
+    let (locator_tx, locator_rx) = mpsc::channel();
+    let locator_in_flight = Arc::new(AtomicBool::new(false));
+    let mut locator_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
+
     // Lazy pane-buffer cache for `.`-prefixed content search in the All tab.
     // Fetched only while a dot query is active; one `pane read` per uncached pane.
     let (contents_tx, contents_rx) = mpsc::channel();
@@ -713,6 +720,26 @@ fn run_event_loop(
             state.cache_key = None; // others changed, invalidate cache
         }
 
+        // ── Lazy pid/port locator refresh (process table + listening ports) ──
+        if connected
+            && state.current_category == CategoryTab::All
+            && locator_last_fetch.elapsed() >= Duration::from_secs(10)
+            && !locator_in_flight.load(Ordering::Relaxed)
+        {
+            locator_last_fetch = Instant::now();
+            locator_in_flight.store(true, Ordering::Relaxed);
+            let tx = locator_tx.clone();
+            let flag = locator_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::ipc::fetch_pid_locator());
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(locator) = locator_rx.try_recv() {
+            state.locator = locator;
+            state.cache_key = None; // locator changed, invalidate cache
+        }
+
         // ── Lazy pane-buffer cache for All content rows ──
         let all_tab = state.current_category == CategoryTab::All;
         if connected
@@ -769,6 +796,7 @@ fn run_event_loop(
                     &state.nodes,
                     &state.contents,
                     &state.others,
+                    &state.locator,
                     &opts,
                     &state.search_query,
                 )
@@ -839,13 +867,20 @@ fn get_selected_target_from_list(
     state: &AppState,
     displayed: &[models::DisplayItem],
 ) -> Option<FocusTarget> {
-    displayed.get(state.selected_index).map(|item| match item {
-        models::DisplayItem::Workspace { id, .. } => FocusTarget::Workspace(id.clone()),
-        models::DisplayItem::Tab { tab_id, .. } => FocusTarget::Tab(tab_id.clone()),
-        models::DisplayItem::Agent { pane_id, .. }
-        | models::DisplayItem::Pane { pane_id, .. }
-        | models::DisplayItem::Other { pane_id, .. } => FocusTarget::Pane(pane_id.clone()),
-    })
+    displayed
+        .get(state.selected_index)
+        .and_then(|item| match item {
+            models::DisplayItem::Workspace { id, .. } => Some(FocusTarget::Workspace(id.clone())),
+            models::DisplayItem::Tab { tab_id, .. } => Some(FocusTarget::Tab(tab_id.clone())),
+            models::DisplayItem::Agent { pane_id, .. }
+            | models::DisplayItem::Pane { pane_id, .. }
+            | models::DisplayItem::Other { pane_id, .. } => {
+                Some(FocusTarget::Pane(pane_id.clone()))
+            }
+            // Status rows have no pane behind them: Enter closes without
+            // focusing anything.
+            models::DisplayItem::Hint { .. } => None,
+        })
 }
 
 /// Toggle the navigator overlay pane open/closed.

@@ -31,6 +31,7 @@ impl AppState {
             cached_total: 0,
             others: std::collections::HashMap::new(),
             contents: std::collections::HashMap::new(),
+            locator: crate::models::PidLocator::default(),
         }
     }
 

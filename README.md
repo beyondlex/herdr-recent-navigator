@@ -346,16 +346,40 @@ bindings are configurable in both styles — see [Keybindings](#keybindings).
 - **Tabs**: MRU tabs within those workspaces
 - **Agents**: AI agents sorted by last activity
 - **Panes**: Individual terminal panes
-- **All**: find panes by runtime state — ssh target, foreground command,
-  cwd — and by buffer content: any query also substring-matches pane
-  scrollback and shows a one-line excerpt around each hit. A filter prefix
-  narrows the search to one source and shows as a badge next to the input:
-  type `cmd `, `ssh `, `cwd `, `file `, or `term ` (label + space), or `.`
-  for buffer content only (`.` shorthand: `.file` = file buffers only).
-  `ws `, `tab ` and `pane ` swap the list to the workspace, tab or pane
-  list — type a name to fuzzy-filter down to it (e.g. `ws auth` = workspaces
-  matching "auth", `pane nvim` = panes matching "nvim").
+- **All**: find panes by runtime state and buffer content in one list:
+  - **Runtime state** — ssh target, foreground command, cwd, listening
+    port, owning pid
+  - **Buffer content** — any query also substring-matches pane scrollback
+    and shows a one-line excerpt around each hit
+  - **Filter prefixes** narrow the search and show as a badge next to the
+    input (label + space):
+    - `cmd `, `ssh `, `cwd `, `file `, `term ` — that source only
+    - `.` — buffer content only (`.file` = file buffers only)
+    - `ws ` / `tab ` / `pane ` — swap to the workspace, tab or pane list,
+      then fuzzy-filter it by name (`ws auth` = workspaces matching
+      "auth", `pane nvim` = panes matching "nvim")
+    - `port ` / `pid ` — locate a pane by its OS footprint; see
+      [Locate a pane by port or pid](#locate-a-pane-by-port-or-pid)
 
+
+### Locate a pane by port or pid
+
+In the All tab, `port 3000` lists every pane that owns a listening TCP
+socket on port 3000 — leave the number off (`port `) to list every port a
+pane is serving — and `pid 12345` lists the pane whose shell started that
+process. Selecting a row jumps to the pane.
+
+Attribution walks the process parent chain up to the pane's shell, so
+background jobs and dev-server children (e.g. the vite behind `npm run dev`)
+resolve to the pane that launched them. Processes outside every pane —
+Docker Desktop's port proxy, system services, servers whose starting shell
+has since exited — are shown as dim status rows with the reason in red
+(e.g. `[::1]:4321` + red `(not in any pane)`, plus the owning command)
+rather than dropped; selecting one closes the navigator without focusing
+anything. An empty result therefore means the port has no listener at all
+(or the pid is gone), and that is stated on a red status row too. The
+process/port snapshot refreshes every few seconds while the All tab is
+open; a just-started server may take a moment to appear.
 
 ## License
 

@@ -442,6 +442,8 @@ fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
     let color = match f {
         OthersFilter::Content => p.accent,
         OthersFilter::Source(src) => source_color(&src, p),
+        OthersFilter::Port => p.teal,
+        OthersFilter::Pid => p.mauve,
         OthersFilter::Workspace => p.peach,
         OthersFilter::Tab => p.red,
         OthersFilter::Pane => p.blue,
@@ -577,6 +579,13 @@ fn render_list(
                     workspace,
                     ..
                 } => row_other(i, source, detail, context, tab, workspace, &row_ctx),
+                DisplayItem::Hint {
+                    source,
+                    detail,
+                    reason,
+                    context,
+                    ..
+                } => row_hint(i, source, detail, reason, context, &row_ctx),
             }
         })
         .collect();
@@ -914,6 +923,8 @@ fn source_color(source: &OtherSource, p: &Palette) -> Color {
         OtherSource::File => p.mauve,
         OtherSource::Terminal => p.blue,
         OtherSource::Cwd => p.green,
+        OtherSource::Port => p.teal,
+        OtherSource::Pid => p.mauve,
     }
 }
 
@@ -966,6 +977,53 @@ fn row_other(
     }
     sp.extend(col_spans(tab, &cols[4], ctx.query, cs, hl));
     sp.extend(col_spans(ws, &cols[5], ctx.query, cs, hl));
+    ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
+}
+
+/// A `port `/`pid ` status row: the lookup found something with no pane
+/// behind it (or nothing at all). Rendered dim so it reads as a footnote
+/// rather than a jump target; same Type/Detail/Context columns as an Other
+/// row, with the pane columns left empty.
+fn row_hint(
+    i: usize,
+    source: &OtherSource,
+    detail: &str,
+    reason: &str,
+    context: &str,
+    ctx: &RowCtx,
+) -> ListItem<'static> {
+    let hl = hl_style(ctx.sel, ctx.p);
+    let dim = Style::default().fg(if ctx.sel { ctx.p.text } else { ctx.p.overlay1 });
+    let red = Style::default().fg(ctx.p.red);
+
+    let rw = ctx.rw as u16;
+    let cols = Layout::horizontal(col_layout::OTHER)
+        .flex(Flex::Start)
+        .split(Rect::new(0, 0, rw, 1));
+
+    let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
+
+    let type_col_w = cols[1].width as usize;
+    let type_text = source.label();
+    let tw = UnicodeWidthStr::width(type_text);
+    let pad = type_col_w.saturating_sub(tw + 1) + 1; // 1-char gutter
+    sp.push(Span::styled(
+        type_text.to_string(),
+        dim.add_modifier(Modifier::BOLD),
+    ));
+    sp.push(Span::raw(" ".repeat(pad)));
+
+    // The reason renders as a red ` (reason)` suffix inside the Detail
+    // column: reserve its width first so the suffix can never bleed into
+    // the Context column, however long `detail` is.
+    let suffix = format!(" ({reason})");
+    let suffix_w = UnicodeWidthStr::width(suffix.as_str());
+    let mut detail_col = cols[2];
+    detail_col.width = detail_col.width.saturating_sub(suffix_w as u16);
+    sp.extend(col_spans(detail, &detail_col, ctx.query, dim, hl));
+    sp.push(Span::styled(suffix, red));
+
+    sp.extend(col_spans(context, &cols[3], "", dim, hl));
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
