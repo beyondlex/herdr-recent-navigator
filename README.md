@@ -10,6 +10,7 @@ navigable by keyboard.
   <img alt="Herdr 0.7.4+" src="https://img.shields.io/badge/Herdr-0.7.4%2B-6693ff" />
   <img alt="Linux and macOS" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-2eb14f" />
   <img alt="Release" src="https://img.shields.io/github/v/release/beyondlex/herdr-recent-navigator" />
+  <a href="https://github.com/beyondlex/herdr-recent-navigator/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/beyondlex/herdr-recent-navigator/ci.yml?branch=main&label=CI" /></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-cd933e" /></a>
 </p>
 
