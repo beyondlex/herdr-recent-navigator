@@ -42,6 +42,8 @@ navigable by keyboard.
 - **Follows your Herdr theme**: dark (TokyoNight) or light (One Light) palettes, or the host terminal palette when Herdr is set to `terminal`, with your `[theme.custom]` colour overrides applied on top
 - **Automatic tracking**: hooks into `workspace.focused`, `pane.focused`,
   `tab.focused` events to build `MRU` history
+- **Phone-friendly popup**: on a narrow client (under 80 columns, such as Herdr
+  on a phone) the popup opens full width instead of the manifest's 60%
 
 ## Install
 
@@ -264,9 +266,32 @@ Ctrl-based combinations when possible.
 | `move_up` | `Up`, `C-p` | Move selection up |
 | `move_down` | `Down`, `C-n` | Move selection down |
 | `select` | `Enter` | Focus selected item |
-| `dismiss` | `Esc` | Clear search / close |
+| `dismiss` | `Esc` | Step back: leave filter → clear query → close |
 | `force_quit` | `C-c` | Close without focusing |
-| `backspace` | `Backspace` | Delete last search character |
+| `backspace` | `Backspace` | Delete last query character |
+
+#### Input modes
+
+By default the navigator is **modeless**: every printable key goes straight into
+the query, so typing filters immediately and `j`, `k` and `/` are just text.
+
+Binding a printable key to a navigation action — `j`/`k` on movement, or a
+letter on `next_category` — turns on the modal style, because a key cannot both
+move the list and be typed:
+
+```toml
+[keybindings]
+move_up = ["k", "Up"]
+move_down = ["j", "Down"]
+```
+
+In modal use, `j`/`k` always move the list, `h`/`l` switch category tabs, `/`
+enters filter mode, and printable keys edit the query while filtering (so a query
+can still contain `j`, `k`, `h` and `l`).
+`Esc` steps back one layer at a time: leave the filter, then drop the query, then
+close. Nothing else to configure: which style you get follows from which keys you
+bound. The mode shows up in the bottom hints and in the prompt colour, never as a
+mode label taking a row.
 
 ### Tab order and visibility
 
@@ -290,17 +315,33 @@ tabs = ["workspaces", "tabs", "panes", "agents", "all"]
 
 ## Usage
 
-| Key (default) | Action |
+### Type-to-search (default keybindings)
+
+| Key | Action |
 |---|---|
-| `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate list |
+| Type text, `Backspace` | Filter the list as you type |
+| `↑` / `↓` or `Ctrl+P` / `Ctrl+N` | Navigate the list |
 | `Tab` / `Shift+Tab` | Cycle category tabs |
 | `Enter` | Focus selected item |
-| `Esc` | Clear search / close |
+| `Esc` | Clear the query, then close |
 | `Ctrl+C` | Close without focusing |
-| Type any text | Fuzzy-search the list |
 
-All keys in the table above are configurable — see [Keybindings](#keybindings)
-to customize.
+### Vim-style (movement bound to a printable key)
+
+| Key | Action |
+|---|---|
+| `j` / `k`, `↑` / `↓`, `Ctrl+N` / `Ctrl+P` | Navigate the list |
+| `/` | Enter filter mode, keeping the current query |
+| Type text, `Backspace` | Edit the query while filtering |
+| `Tab` / `Shift+Tab` | Cycle category tabs in either mode |
+| `h` / `l` | Previous / next category tab (outside filter mode) |
+| `Enter` | Focus selected item |
+| `Esc` | Leave filter mode keeping the query; again clears the query; again closes |
+| `Ctrl+C` | Close without focusing |
+
+Which table applies is decided by your `[keybindings]`, see
+[Input modes](#input-modes). Navigation, category, select, dismiss and backspace
+bindings are configurable in both styles — see [Keybindings](#keybindings).
 
 ### Category tabs
 
@@ -310,16 +351,40 @@ to customize.
 - **Tabs**: MRU tabs within those workspaces
 - **Agents**: AI agents sorted by last activity
 - **Panes**: Individual terminal panes
-- **All**: find panes by runtime state — ssh target, foreground command,
-  cwd — and by buffer content: any query also substring-matches pane
-  scrollback and shows a one-line excerpt around each hit. A filter prefix
-  narrows the search to one source and shows as a badge next to the input:
-  type `cmd `, `ssh `, `cwd `, `file `, or `term ` (label + space), or `.`
-  for buffer content only (`.` shorthand: `.file` = file buffers only).
-  `ws `, `tab ` and `pane ` swap the list to the workspace, tab or pane
-  list — type a name to fuzzy-filter down to it (e.g. `ws auth` = workspaces
-  matching "auth", `pane nvim` = panes matching "nvim").
+- **All**: find panes by runtime state and buffer content in one list:
+  - **Runtime state** — ssh target, foreground command, cwd, listening
+    port, owning pid
+  - **Buffer content** — any query also substring-matches pane scrollback
+    and shows a one-line excerpt around each hit
+  - **Filter prefixes** narrow the search and show as a badge next to the
+    input (label + space):
+    - `cmd `, `ssh `, `cwd `, `file `, `term ` — that source only
+    - `.` — buffer content only (`.file` = file buffers only)
+    - `ws ` / `tab ` / `pane ` — swap to the workspace, tab or pane list,
+      then fuzzy-filter it by name (`ws auth` = workspaces matching
+      "auth", `pane nvim` = panes matching "nvim")
+    - `port ` / `pid ` — locate a pane by its OS footprint; see
+      [Locate a pane by port or pid](#locate-a-pane-by-port-or-pid)
 
+
+### Locate a pane by port or pid
+
+In the All tab, `port 3000` lists every pane that owns a listening TCP
+socket on port 3000 — leave the number off (`port `) to list every port a
+pane is serving — and `pid 12345` lists the pane whose shell started that
+process. Selecting a row jumps to the pane.
+
+Attribution walks the process parent chain up to the pane's shell, so
+background jobs and dev-server children (e.g. the vite behind `npm run dev`)
+resolve to the pane that launched them. Processes outside every pane —
+Docker Desktop's port proxy, system services, servers whose starting shell
+has since exited — are shown as dim status rows with the reason in red
+(e.g. `[::1]:4321` + red `(not in any pane)`, plus the owning command)
+rather than dropped; selecting one closes the navigator without focusing
+anything. An empty result therefore means the port has no listener at all
+(or the pid is gone), and that is stated on a red status row too. The
+process/port snapshot refreshes every few seconds while the All tab is
+open; a just-started server may take a moment to appear.
 
 ## License
 

@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::models::{AgentStatus, NavigationNode, PaneOthers, WORKTREE_SEP};
+use crate::models::{
+    AgentStatus, NavigationNode, PaneOthers, PidLocator, PortOwner, ProcSnapshot, WORKTREE_SEP,
+};
 
 /// Information about the currently focused pane, captured during
 /// `fetch_all_nodes()` to avoid a redundant subprocess call.
@@ -113,6 +115,11 @@ struct ProcessInfoResult {
 struct ProcessInfo {
     #[serde(default)]
     foreground_processes: Vec<ForegroundProcess>,
+    /// The pane shell's pid. Processes started inside the pane descend from
+    /// it; this is what ties an OS pid to a pane in the `pid `/`port `
+    /// lookups. Optional: older Herdr builds may omit it.
+    #[serde(default)]
+    shell_pid: Option<u32>,
 }
 
 /// A single foreground process entry within a pane.
@@ -379,6 +386,29 @@ pub fn fetch_focused_pane_info() -> Result<(String, String, String, String)> {
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct PaneLayoutResult {
+    layout: PaneLayout,
+}
+
+#[derive(Debug, Deserialize)]
+struct PaneLayout {
+    area: LayoutArea,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayoutArea {
+    width: u16,
+}
+
+/// Width in columns of the active tab's pane area, from `herdr pane layout`.
+/// Herdr no longer exports `HERDR_PANE_COLS` to plugin actions, so this is how
+/// the navigator learns it was opened on a narrow (phone) client.
+pub fn fetch_layout_width() -> Result<u16> {
+    let result: PaneLayoutResult = herdr_cli(&["pane", "layout"])?;
+    Ok(result.layout.area.width)
+}
+
 /// Fetch the label for a given tab_id.
 pub fn fetch_tab_name(tab_id: &str, workspace_id: &str) -> Option<String> {
     herdr_cli::<TabListResult>(&["tab", "list", "--workspace", workspace_id])
@@ -510,16 +540,19 @@ pub fn fetch_all_nodes() -> Result<(Vec<NavigationNode>, Option<FocusedPaneInfo>
     Ok((nodes, active_pane_info))
 }
 
-/// The recognized foreground command line of a pane.
+/// The recognized foreground command line of a pane, plus the pane shell's
+/// pid when Herdr reports one.
 #[derive(Debug, Clone)]
 pub struct PaneProcess {
     pub command: String,
+    pub shell_pid: Option<u32>,
 }
 
 /// Fetch the foreground command line of a pane via `herdr pane process-info`.
 /// Returns `None` when the pane has no foreground process or an empty command.
 pub fn fetch_pane_process(pane_id: &str) -> Result<Option<PaneProcess>> {
     let result: ProcessInfoResult = herdr_cli(&["pane", "process-info", "--pane", pane_id])?;
+    let shell_pid = result.process_info.as_ref().and_then(|pi| pi.shell_pid);
     let command = result
         .process_info
         .and_then(|pi| pi.foreground_processes.into_iter().next())
@@ -533,7 +566,7 @@ pub fn fetch_pane_process(pane_id: &str) -> Result<Option<PaneProcess>> {
     if command.trim().is_empty() {
         Ok(None)
     } else {
-        Ok(Some(PaneProcess { command }))
+        Ok(Some(PaneProcess { command, shell_pid }))
     }
 }
 
@@ -587,6 +620,7 @@ pub fn refresh_others(
         if let Ok(Some(proc)) = fetch_pane_process(&n.pane_id) {
             entry.command = Some(proc.command.clone());
             entry.ssh_target = crate::others::parse_ssh_target(&proc.command);
+            entry.shell_pid = proc.shell_pid;
             updated += 1;
         }
     }
@@ -654,6 +688,88 @@ pub fn fetch_pane_content(pane_id: &str) -> Result<Option<String>> {
     } else {
         Ok(Some(stripped))
     }
+}
+
+/// Run a system command (never the herdr CLI) and return raw stdout.
+/// In tests, consumes from the same mock queue as `herdr_cli`.
+fn sys_cli_raw(bin: &str, args: &[&str]) -> Result<String> {
+    #[cfg(test)]
+    {
+        if let Some(output) = mock_io::pop_mock_output() {
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!(
+                    "mock {bin} failed (exit={}): {}",
+                    output.status,
+                    stderr.trim()
+                );
+            }
+            return Ok(stdout);
+        }
+    }
+
+    let mut run = Command::new(bin).args(args).output();
+    if run.is_err() && bin == "lsof" {
+        // Not on PATH (GUI-spawned processes on macOS often lack /usr/sbin):
+        // lsof lives at a fixed location there.
+        run = Command::new("/usr/sbin/lsof").args(args).output();
+    }
+    let output = run.with_context(|| format!("Failed to run {bin}"))?;
+    if !output.status.success() {
+        // lsof exits 1 with no output when nothing matches — an empty table
+        // is the correct reading, not a failure.
+        if bin == "lsof" && output.status.code() == Some(1) && output.stdout.is_empty() {
+            return Ok(String::new());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "{bin} {} failed (exit={}): {}",
+            args.join(" "),
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Snapshot the OS process table and the machine's listening TCP ports for
+/// the All tab's `port `/`pid ` lookups. Either source may be unavailable
+/// (tool missing or erroring); its map is then simply empty and those
+/// lookups report no match. One `ps` + one `lsof` subprocess per call —
+/// callers run it on a background timer, never per keystroke.
+pub fn fetch_pid_locator() -> PidLocator {
+    let mut locator = PidLocator::default();
+
+    match sys_cli_raw("ps", &["-eo", "pid=,ppid=,command="]) {
+        Ok(out) => {
+            for row in crate::others::parse_ps_table(&out) {
+                locator.procs.insert(
+                    row.pid,
+                    ProcSnapshot {
+                        ppid: row.ppid,
+                        command: row.command,
+                    },
+                );
+            }
+        }
+        Err(e) => log::debug!("pid locator: ps failed: {e:#}"),
+    }
+
+    match sys_cli_raw("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pn"]) {
+        Ok(out) => {
+            for (port, pid, addr) in crate::others::parse_lsof_ports(&out) {
+                locator
+                    .listeners
+                    .entry(port)
+                    .or_default()
+                    .push(PortOwner { pid, addr });
+            }
+        }
+        Err(e) => log::debug!("pid locator: lsof failed: {e:#}"),
+    }
+
+    locator
 }
 
 /// Refresh cached pane content for content search. Fetches only panes missing
@@ -844,6 +960,45 @@ mod tests {
         mock_io::set_mock_outputs(vec![pi]);
         let proc = fetch_pane_process("p-1").unwrap().unwrap();
         assert_eq!(proc.command, "psql -U poste -h 127.0.0.1");
+        assert_eq!(proc.shell_pid, Some(2));
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_pid_locator_builds_process_and_port_maps() {
+        mock_io::clear();
+        let ps = mock_io::make_output(
+            "    1     0 /sbin/launchd\n  200   100 herdr server\n  300   200 node server.js\n",
+        );
+        let lsof = mock_io::make_output("p300\nf11\nn*:3000\nf12\nn*:3000\np50\nf3\nn*:22\n");
+        mock_io::set_mock_outputs(vec![ps, lsof]);
+
+        let locator = fetch_pid_locator();
+        assert_eq!(locator.procs.len(), 3);
+        assert_eq!(
+            locator.procs.get(&300).map(|p| p.command.as_str()),
+            Some("node server.js")
+        );
+        assert_eq!(locator.procs.get(&300).and_then(|p| p.ppid), Some(200));
+        // The duplicated `*:3000` socket collapses to one owner; pid 50 stays
+        // separate.
+        assert_eq!(locator.listeners[&3000].len(), 1);
+        assert_eq!(locator.listeners[&3000][0].pid, 300);
+        assert_eq!(locator.listeners[&22].len(), 1);
+        assert!(!locator.listeners.contains_key(&9999));
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_pid_locator_tool_failure_leaves_maps_empty() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![
+            mock_io::make_failing_output(), // ps fails
+            mock_io::make_failing_output(), // lsof fails
+        ]);
+        let locator = fetch_pid_locator();
+        assert!(locator.procs.is_empty());
+        assert!(locator.listeners.is_empty());
     }
 
     #[test]
@@ -948,6 +1103,26 @@ mod tests {
         assert_eq!(ssh_entry.ssh_target.as_deref(), Some("lex@10.0.0.9:2200"));
         // Agent panes never get entries.
         assert!(!map.contains_key("p-agent"));
+    }
+
+    // ── pane layout ──
+
+    #[test]
+    #[serial]
+    fn test_fetch_layout_width_reads_area_width() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_output(
+            r#"{"id":"cli:pane:layout","result":{"layout":{"area":{"height":45,"width":52,"x":0,"y":0},"focused_pane_id":"w5:pD","panes":[],"splits":[],"tab_id":"w5:tD","workspace_id":"w5","zoomed":false},"type":"pane_layout"}}"#,
+        )]);
+        assert_eq!(fetch_layout_width().unwrap(), 52);
+    }
+
+    #[test]
+    #[serial]
+    fn test_fetch_layout_width_errors_when_herdr_fails() {
+        mock_io::clear();
+        mock_io::set_mock_outputs(vec![mock_io::make_failing_output()]);
+        assert!(fetch_layout_width().is_err());
     }
 
     // ── pane content (content search) ──

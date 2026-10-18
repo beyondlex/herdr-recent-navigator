@@ -179,12 +179,15 @@ if command -v herdr &>/dev/null; then
 # palette. Herdr's own theme is preferred when it is set.
 # theme = "terminal"
 
-# Uncomment and edit to customize internal navigation keys:
+# Uncomment and edit to customize internal navigation keys. Binding a letter to
+# a navigation action also switches on the vim-style input (j/k move, h/l switch
+# tabs, / starts filtering, Esc steps back one layer); with the defaults below,
+# typing filters immediately and j, k, h, l and / stay ordinary search characters.
 # [keybindings]
 # next_category = ["Tab"]
 # previous_category = ["S-Tab"]
-# move_up = ["Up", "C-p"]
-# move_down = ["Down", "C-n"]
+# move_up = ["Up", "C-p"]          # vim: ["k", "Up"]
+# move_down = ["Down", "C-n"]      # vim: ["j", "Down"]
 # select = ["Enter"]
 # dismiss = ["Esc"]
 # force_quit = ["C-c"]

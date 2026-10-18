@@ -661,6 +661,13 @@ fn run_event_loop(
     let others_in_flight = Arc::new(AtomicBool::new(false));
     let mut others_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
 
+    // ── Lazy pid/port locator for `port `/`pid ` queries in the All tab ──
+    // OS process table + listening TCP ports; one ps + one lsof per
+    // refresh, never per keystroke.
+    let (locator_tx, locator_rx) = mpsc::channel();
+    let locator_in_flight = Arc::new(AtomicBool::new(false));
+    let mut locator_last_fetch = Instant::now() - Duration::from_secs(11); // fire immediately
+
     // Lazy pane-buffer cache for `.`-prefixed content search in the All tab.
     // Fetched only while a dot query is active; one `pane read` per uncached pane.
     let (contents_tx, contents_rx) = mpsc::channel();
@@ -725,6 +732,26 @@ fn run_event_loop(
             state.cache_key = None; // others changed, invalidate cache
         }
 
+        // ── Lazy pid/port locator refresh (process table + listening ports) ──
+        if connected
+            && state.current_category == CategoryTab::All
+            && locator_last_fetch.elapsed() >= Duration::from_secs(10)
+            && !locator_in_flight.load(Ordering::Relaxed)
+        {
+            locator_last_fetch = Instant::now();
+            locator_in_flight.store(true, Ordering::Relaxed);
+            let tx = locator_tx.clone();
+            let flag = locator_in_flight.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::ipc::fetch_pid_locator());
+                flag.store(false, Ordering::Relaxed);
+            });
+        }
+        while let Ok(locator) = locator_rx.try_recv() {
+            state.locator = locator;
+            state.cache_key = None; // locator changed, invalidate cache
+        }
+
         // ── Lazy pane-buffer cache for All content rows ──
         let all_tab = state.current_category == CategoryTab::All;
         if connected
@@ -782,6 +809,7 @@ fn run_event_loop(
                     &state.nodes,
                     &state.contents,
                     &state.others,
+                    &state.locator,
                     &opts,
                     &state.search_query,
                 )
@@ -852,13 +880,20 @@ fn get_selected_target_from_list(
     state: &AppState,
     displayed: &[models::DisplayItem],
 ) -> Option<FocusTarget> {
-    displayed.get(state.selected_index).map(|item| match item {
-        models::DisplayItem::Workspace { id, .. } => FocusTarget::Workspace(id.clone()),
-        models::DisplayItem::Tab { tab_id, .. } => FocusTarget::Tab(tab_id.clone()),
-        models::DisplayItem::Agent { pane_id, .. }
-        | models::DisplayItem::Pane { pane_id, .. }
-        | models::DisplayItem::Other { pane_id, .. } => FocusTarget::Pane(pane_id.clone()),
-    })
+    displayed
+        .get(state.selected_index)
+        .and_then(|item| match item {
+            models::DisplayItem::Workspace { id, .. } => Some(FocusTarget::Workspace(id.clone())),
+            models::DisplayItem::Tab { tab_id, .. } => Some(FocusTarget::Tab(tab_id.clone())),
+            models::DisplayItem::Agent { pane_id, .. }
+            | models::DisplayItem::Pane { pane_id, .. }
+            | models::DisplayItem::Other { pane_id, .. } => {
+                Some(FocusTarget::Pane(pane_id.clone()))
+            }
+            // Status rows have no pane behind them: Enter closes without
+            // focusing anything.
+            models::DisplayItem::Hint { .. } => None,
+        })
 }
 
 /// Toggle the navigator overlay pane open/closed.
@@ -896,17 +931,25 @@ fn handle_pane_open() -> Result<()> {
     }
 
     // Open a new navigator pane
-    // Use HERDR_PANE_COLS (set by herdr from estimate_pane_size) to detect
-    // narrow panes — if < 80 cols, use 90% popup width for mobile-friendly view.
+    // Detect narrow panes — if < 80 cols, use a full-width popup for a
+    // mobile-friendly view. Older Herdr set HERDR_PANE_COLS; current Herdr does
+    // not, so fall back to the active tab's width from `herdr pane layout`.
     let pane_cols = std::env::var("HERDR_PANE_COLS")
         .ok()
-        .and_then(|s| s.parse::<u16>().ok());
-    let narrow = pane_cols.map(|w| w < 80).unwrap_or(false);
+        .and_then(|s| s.parse::<u16>().ok())
+        .map(|w| (w, "HERDR_PANE_COLS"))
+        .or_else(|| ipc::fetch_layout_width().ok().map(|w| (w, "pane layout")));
+    if pane_cols.is_none() {
+        log::warn!(
+            "pane-open: no HERDR_PANE_COLS and `herdr pane layout` failed; assuming a wide client"
+        );
+    }
+    let narrow = pane_cols.map(|(w, _)| w < 80).unwrap_or(false);
     log::info!(
-        "pane-open: HERDR_PANE_COLS={:?} → {}",
+        "pane-open: pane_cols={:?} → {}",
         pane_cols,
         if narrow {
-            "90% width"
+            "100% width"
         } else {
             "manifest width (60%)"
         },
@@ -924,7 +967,7 @@ fn handle_pane_open() -> Result<()> {
         "--focus",
     ];
     if narrow {
-        args.extend_from_slice(&["--width", "90%"]);
+        args.extend_from_slice(&["--width", "100%"]);
     }
     let output = ProcessCommand::new(&herdr_bin)
         .args(&args)

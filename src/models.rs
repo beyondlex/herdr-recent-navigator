@@ -107,10 +107,20 @@ pub enum OtherSource {
     File,
     /// The pane's current directory.
     Cwd,
+    /// The pane owns a listening TCP socket (detail = the listen address,
+    /// context = the owner command). Backs the `port ` filter.
+    Port,
+    /// The pane's process tree contains the queried pid (detail = that
+    /// pid's command). Backs the `pid ` filter.
+    Pid,
 }
 
 impl OtherSource {
-    /// All variants, in display-priority order.
+    /// The cached-state sources, in display-priority order. Deliberately
+    /// excludes `Port`/`Pid`: those rows are computed at query time from the
+    /// [`PidLocator`] snapshot rather than cached per pane, and `port `/`pid `
+    /// are dimension filters, not source prefixes — keeping them out of `ALL`
+    /// keeps the source-prefix parser and per-source iteration untouched.
     pub const ALL: [OtherSource; 5] = [
         OtherSource::Ssh,
         OtherSource::Cmd,
@@ -127,6 +137,8 @@ impl OtherSource {
             OtherSource::Terminal => "term",
             OtherSource::File => "file",
             OtherSource::Cwd => "cwd",
+            OtherSource::Port => "port",
+            OtherSource::Pid => "pid",
         }
     }
 
@@ -138,6 +150,8 @@ impl OtherSource {
             OtherSource::Terminal => 2,
             OtherSource::File => 3,
             OtherSource::Cwd => 4,
+            OtherSource::Port => 5,
+            OtherSource::Pid => 6,
         }
     }
 }
@@ -150,6 +164,12 @@ pub enum OthersFilter {
     Content,
     /// `<label> ` prefix — rows of that source only.
     Source(OtherSource),
+    /// Leading `port ` — panes owning a listening TCP port. The rest of the
+    /// query is the port number; empty lists every port that maps to a pane.
+    Port,
+    /// Leading `pid ` — the pane whose process tree contains the pid that
+    /// follows; empty matches nothing.
+    Pid,
     /// Leading `ws ` — the workspace list, filtered by the remaining text.
     Workspace,
     /// Leading `tab ` — the tab list, filtered by the remaining text.
@@ -161,8 +181,8 @@ pub enum OthersFilter {
 impl OthersFilter {
     /// Split a leading filter off `query`, returning it with the remaining
     /// text. A filter activates only when its exact label is followed by a
-    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `ws `, `tab `,
-    /// `pane `) — a bare label stays ordinary search text.
+    /// space (`cmd `, `ssh `, `cwd `, `file `, `term `, `port `, `pid `,
+    /// `ws `, `tab `, `pane `) — a bare label stays ordinary search text.
     pub fn parse(query: &str) -> (Option<Self>, &str) {
         let (base, rest) = match query.strip_prefix('.') {
             Some(r) => (Some(OthersFilter::Content), r),
@@ -176,6 +196,8 @@ impl OthersFilter {
             }
         }
         for (label, f) in [
+            ("port", OthersFilter::Port),
+            ("pid", OthersFilter::Pid),
             ("ws", OthersFilter::Workspace),
             ("tab", OthersFilter::Tab),
             ("pane", OthersFilter::Pane),
@@ -194,6 +216,8 @@ impl OthersFilter {
         match self {
             OthersFilter::Content => "content",
             OthersFilter::Source(src) => src.label(),
+            OthersFilter::Port => "port",
+            OthersFilter::Pid => "pid",
             OthersFilter::Workspace => "ws",
             OthersFilter::Tab => "tab",
             OthersFilter::Pane => "pane",
@@ -209,6 +233,38 @@ pub struct PaneOthers {
     pub cwd: Option<String>,
     pub command: Option<String>,
     pub ssh_target: Option<String>,
+    /// The pane shell's process id, when Herdr reports one. Processes started
+    /// inside the pane descend from this pid — this is how a `pid `/`port `
+    /// query attributes an OS process to a pane.
+    pub shell_pid: Option<u32>,
+}
+
+/// One owner of a listening TCP socket, as reported by `lsof`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortOwner {
+    pub pid: u32,
+    /// Listen address as lsof prints it (`*:3000`, `127.0.0.1:8080`).
+    pub addr: String,
+}
+
+/// One row of the OS process table (from `ps -eo pid=,ppid=,command=`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcSnapshot {
+    /// Parent pid; `None` when the row carries no parseable parent.
+    pub ppid: Option<u32>,
+    pub command: String,
+}
+
+/// Snapshot of the OS process table and the machine's listening TCP ports,
+/// backing the All tab's `port `/`pid ` lookups. Either map degrades to empty
+/// when its tool (`ps` / `lsof`) is missing or fails; queries then simply
+/// report no match. Refreshed in the background while the All tab is open.
+#[derive(Debug, Clone, Default)]
+pub struct PidLocator {
+    /// pid → process table row.
+    pub procs: HashMap<u32, ProcSnapshot>,
+    /// Listening TCP port → its owner processes.
+    pub listeners: HashMap<u16, Vec<PortOwner>>,
 }
 
 /// The category tabs at the top of the navigator UI.
@@ -324,6 +380,23 @@ pub enum DisplayItem {
         context: String,
         last_accessed_at: u64,
     },
+    /// A non-jumpable status row in the All tab's `port `/`pid ` results:
+    /// the lookup found a listener or process with no pane behind it, or
+    /// explains why it found nothing at all. Selecting it exits without
+    /// focusing anything.
+    Hint {
+        source: OtherSource,
+        /// What was found (listen address, command line) or the echoed
+        /// `port N` / `pid N` when nothing was found.
+        detail: String,
+        /// Why there is no pane behind it — rendered in red after `detail`:
+        /// not in any pane, nothing listening, snapshot unavailable.
+        reason: String,
+        /// Extra locating info shown in the Context column: the owning
+        /// command, when known.
+        context: String,
+        last_accessed_at: u64,
+    },
 }
 
 impl DisplayItem {
@@ -339,6 +412,9 @@ impl DisplayItem {
             DisplayItem::Other {
                 pane_name, source, ..
             } => format!("{}{}", source.priority(), pane_name),
+            // The `~` prefix sorts after the digit-led keys of Other rows, so
+            // status rows stay below anything focusable.
+            DisplayItem::Hint { detail, .. } => format!("~{detail}"),
         }
     }
 
@@ -387,6 +463,13 @@ impl DisplayItem {
                     workspace
                 )
             }
+            DisplayItem::Hint {
+                source,
+                detail,
+                reason,
+                context,
+                ..
+            } => format!("{} {} {} {}", source.label(), detail, reason, context),
         }
     }
 }
@@ -566,6 +649,40 @@ impl Keybindings {
         check!(backspace, Action::Backspace);
         None
     }
+
+    /// Whether moving the list is bound to a printable character (`j`/`k`, `l`,
+    /// …). Such a key cannot both move the list and be typed into the search
+    /// box, so those users get the modal filter and everyone else keeps
+    /// type-to-search.
+    pub fn has_printable_navigation(&self) -> bool {
+        let typable = |binding: &KeyBinding| {
+            matches!(binding.code, KeyCode::Char(_))
+                && matches!(binding.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        };
+        [
+            &self.move_up,
+            &self.move_down,
+            &self.next_category,
+            &self.previous_category,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s.parse::<KeyBinding>().ok())
+        .any(|b| typable(&b))
+    }
+}
+
+/// Whether keys control list navigation or edit the filter query.
+///
+/// `TypeToSearch` is the default and has no modes: any printable key goes
+/// straight into the query. The two modal states only appear once a printable
+/// key is bound to a navigation action (`move_up = ["k"]`), where it cannot also
+/// be typed — see [`Keybindings::has_printable_navigation`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    TypeToSearch,
+    Navigation,
+    Filtering,
 }
 
 /// Global TUI application state.
@@ -583,6 +700,8 @@ pub struct AppState {
     pub tabs: Vec<CategoryTab>,
     /// Search input text.
     pub search_query: String,
+    /// Current keyboard mode: list navigation or query editing.
+    pub input_mode: InputMode,
     /// Currently highlighted list index.
     pub selected_index: usize,
     /// Animation tick for spinner (incremented each render frame).
@@ -602,6 +721,8 @@ pub struct AppState {
     pub others: HashMap<String, PaneOthers>,
     /// Cached ANSI-stripped pane buffers backing the All tab's content rows.
     pub contents: HashMap<String, String>,
+    /// OS process/port snapshot backing the All tab's `port `/`pid ` rows.
+    pub locator: PidLocator,
 }
 
 fn state_file_path() -> PathBuf {
@@ -827,6 +948,29 @@ mod category_tab_tests {
         assert_eq!(
             OthersFilter::parse("cmd deploy"),
             (Some(OthersFilter::Source(OtherSource::Cmd)), "deploy")
+        );
+    }
+
+    #[test]
+    fn test_others_filter_port_and_pid() {
+        assert_eq!(
+            OthersFilter::parse("port 3000"),
+            (Some(OthersFilter::Port), "3000")
+        );
+        assert_eq!(OthersFilter::parse("port "), (Some(OthersFilter::Port), ""));
+        assert_eq!(
+            OthersFilter::parse("pid 42"),
+            (Some(OthersFilter::Pid), "42")
+        );
+        // Bare labels stay ordinary search text.
+        assert_eq!(OthersFilter::parse("port"), (None, "port"));
+        assert_eq!(OthersFilter::parse("pid"), (None, "pid"));
+        // A label-shaped prefix that is not exactly the label is plain text.
+        assert_eq!(OthersFilter::parse("ports 4"), (None, "ports 4"));
+        // Source labels still win over port/pid.
+        assert_eq!(
+            OthersFilter::parse("cwd /tmp"),
+            (Some(OthersFilter::Source(OtherSource::Cwd)), "/tmp")
         );
     }
 

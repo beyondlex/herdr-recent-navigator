@@ -1,6 +1,6 @@
 use crate::format::*;
 use crate::models::{
-    AgentStatus, AppState, CategoryTab, DisplayItem, Keybindings, OtherSource, OthersFilter,
+    AgentStatus, AppState, CategoryTab, DisplayItem, InputMode, OtherSource, OthersFilter,
     WORKTREE_SEP,
 };
 use crate::theme::ThemeOverrides;
@@ -302,7 +302,7 @@ pub fn render(frame: &mut Frame, state: &AppState, displayed: &[DisplayItem], to
         list_chunks[1],
         &p,
     );
-    render_status_bar(frame, chunks[3], &p, narrow, &state.keybindings);
+    render_status_bar(frame, chunks[3], &p, state);
 }
 
 // ── Sub-renderers ───────────────────────────────────────────────────────────
@@ -361,6 +361,11 @@ fn render_search(
     total: usize,
     p: &Palette,
 ) {
+    // The mode lives in two cheap signals instead of a text badge: the prompt
+    // takes the accent only while keys edit the filter, and Filtering shows a
+    // real terminal cursor at the insertion point. A badge here would cost
+    // 4-6 columns of the query on a 40-column popup.
+    let filtering = state.input_mode == InputMode::Filtering;
     let prefix = " > ";
     // In the All tab a filter prefix (`cmd `, `.`, …) is lifted out of the
     // query and shown as a badge chip; the rest is the live search text.
@@ -370,7 +375,15 @@ fn render_search(
         (None, state.search_query.as_str())
     };
     let is_empty = rest.is_empty();
-    let text = if is_empty { "type to filter..." } else { rest };
+    let text = if is_empty {
+        match state.input_mode {
+            // Navigation mode is the one state where typing does not filter.
+            InputMode::Navigation => "type / to filter",
+            InputMode::TypeToSearch | InputMode::Filtering => "type to filter...",
+        }
+    } else {
+        rest
+    };
     let count_str = if is_empty {
         format!("{}", total)
     } else {
@@ -382,6 +395,11 @@ fn render_search(
     } else {
         Style::default().fg(p.text)
     };
+    let prompt_style = match state.input_mode {
+        InputMode::TypeToSearch => text_style,
+        InputMode::Filtering => Style::default().fg(p.accent),
+        InputMode::Navigation => Style::default().fg(p.overlay0),
+    };
     let badge_w = match filter {
         Some(f) => f.label().len() + 4, // chip padding (" x ") + separator space
         None => 0,
@@ -391,7 +409,7 @@ fn render_search(
         (prefix.len() + badge_w + text.len() + count_str.len() + padding_right) as u16,
     ) as usize;
 
-    let mut spans = vec![Span::styled(prefix, text_style)];
+    let mut spans = vec![Span::styled(prefix, prompt_style)];
     if let Some(f) = filter {
         spans.push(filter_chip(f, p));
         spans.push(Span::raw(" "));
@@ -409,6 +427,14 @@ fn render_search(
             .style(Style::default().fg(p.text)),
         area,
     );
+
+    // The insertion point is what says "typing goes to the filter" — the frame
+    // hides the cursor on every other mode. Clamped so a query wider than the
+    // pane cannot move it off the popup.
+    if filtering {
+        let x = (area.x as usize + prefix.len() + badge_w + rest.len()) as u16;
+        frame.set_cursor_position((x.min(area.x + area.width.saturating_sub(1)), area.y));
+    }
 }
 
 /// Colored chip shown left of the input while an All filter is active.
@@ -416,6 +442,8 @@ fn filter_chip(f: OthersFilter, p: &Palette) -> Span<'static> {
     let color = match f {
         OthersFilter::Content => p.accent,
         OthersFilter::Source(src) => source_color(&src, p),
+        OthersFilter::Port => p.teal,
+        OthersFilter::Pid => p.mauve,
         OthersFilter::Workspace => p.peach,
         OthersFilter::Tab => p.red,
         OthersFilter::Pane => p.blue,
@@ -535,23 +563,30 @@ fn render_list(
                     workspace,
                     ..
                 } => row_agent(i, agent_id, status, tab, workspace, &row_ctx),
-DisplayItem::Pane {
-                pane_name,
-                workspace,
-                tab,
-                agent_id,
-                status,
-                ..
-            } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
-            DisplayItem::Other {
-                source,
-                detail,
-                context,
-                tab,
-                workspace,
-                ..
-            } => row_other(i, source, detail, context, tab, workspace, &row_ctx),
-        }
+                DisplayItem::Pane {
+                    pane_name,
+                    workspace,
+                    tab,
+                    agent_id,
+                    status,
+                    ..
+                } => row_pane(i, pane_name, workspace, tab, agent_id, status, &row_ctx),
+                DisplayItem::Other {
+                    source,
+                    detail,
+                    context,
+                    tab,
+                    workspace,
+                    ..
+                } => row_other(i, source, detail, context, tab, workspace, &row_ctx),
+                DisplayItem::Hint {
+                    source,
+                    detail,
+                    reason,
+                    context,
+                    ..
+                } => row_hint(i, source, detail, reason, context, &row_ctx),
+            }
         })
         .collect();
     let visible_rows = area.height as usize;
@@ -574,64 +609,69 @@ DisplayItem::Pane {
     );
 }
 
-fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, narrow: bool, kb: &Keybindings) {
+/// Status bar: `(key, label)` hints, most essential first, packed into whatever
+/// width the pane gives and dropped from the end when they do not fit — so a long
+/// binding name (`C-Space`) shortens the bar instead of truncating it mid-word.
+/// What is advertised depends on the input mode, and in every mode the keys named
+/// are the ones the user configured.
+fn render_status_bar(frame: &mut Frame, area: Rect, p: &Palette, state: &AppState) {
     fn first(v: &[String]) -> &str {
         v.first().map(|s| s.as_str()).unwrap_or("?")
     }
-    let hints: Vec<Span> = if narrow {
-        vec![
-            Span::styled(
-                format!(" {}", first(&kb.next_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.previous_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("↔", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.select)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("Go", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!(" {}", first(&kb.dismiss)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled("✕", Style::default().fg(p.overlay0)),
-        ]
-    } else {
-        vec![
-            Span::styled(
-                format!("   {}", first(&kb.next_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Next", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.previous_category)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Prev", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.move_up)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Move", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.select)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Focus", Style::default().fg(p.overlay0)),
-            Span::styled(
-                format!("  {}", first(&kb.dismiss)),
-                Style::default().fg(p.accent),
-            ),
-            Span::styled(" Close", Style::default().fg(p.overlay0)),
-        ]
+    let kb = &state.keybindings;
+    let move_keys = format!("{}/{}", first(&kb.move_up), first(&kb.move_down));
+
+    // Most essential first, least guessable last: the tab strip above the list
+    // already shows the categories, so they get no hint here, and on a narrow
+    // pane the last thing to fall off is how to start filtering — the empty
+    // prompt says `type / to filter` for that. The hardcoded vim movement keys
+    // are left out on purpose: navigation mode only switches on for someone who
+    // bound a letter to a navigation action, so they chose those keys while
+    // writing the config, which is also where the README documents them. Naming
+    // them here would spend the scarcest column budget on keys the reader knows.
+    let hints: Vec<(&str, &str)> = match state.input_mode {
+        InputMode::TypeToSearch => vec![
+            (first(&kb.select), "Focus"),
+            (first(&kb.dismiss), "Close"),
+            (first(&kb.next_category), "Next"),
+            (first(&kb.previous_category), "Prev"),
+            (move_keys.as_str(), "Move"),
+        ],
+        InputMode::Navigation => vec![
+            (first(&kb.select), "Go"),
+            (first(&kb.dismiss), "Close"),
+            (move_keys.as_str(), "Move"),
+            ("/", "Filter"),
+        ],
+        InputMode::Filtering => vec![
+            (first(&kb.select), "Go"),
+            (first(&kb.force_quit), "Close"),
+            (first(&kb.dismiss), "Nav"),
+            (move_keys.as_str(), "Move"),
+        ],
     };
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used = 0;
+    for (key, label) in hints {
+        // Display columns, not bytes: a binding name can carry a non-ASCII key
+        // (`move_up = ["←"]`), which counts as one column but several bytes. The
+        // three pad columns are the hint's own key/label space plus a two-column
+        // gutter, which is what keeps `Esc Close  Tab Next` from reading as one
+        // long label.
+        let width = UnicodeWidthStr::width(key) + UnicodeWidthStr::width(label) + 3;
+        if used + width > area.width as usize {
+            break;
+        }
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(key, Style::default().fg(p.accent)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(label, Style::default().fg(p.overlay0)));
+        used += width;
+    }
+
     frame.render_widget(
-        Paragraph::new(Line::from(hints))
+        Paragraph::new(Line::from(spans))
             .block(
                 Block::default()
                     .borders(Borders::TOP)
@@ -883,6 +923,8 @@ fn source_color(source: &OtherSource, p: &Palette) -> Color {
         OtherSource::File => p.mauve,
         OtherSource::Terminal => p.blue,
         OtherSource::Cwd => p.green,
+        OtherSource::Port => p.teal,
+        OtherSource::Pid => p.mauve,
     }
 }
 
@@ -917,7 +959,10 @@ fn row_other(
     let type_text = source.label();
     let tw = UnicodeWidthStr::width(type_text);
     let pad = type_col_w.saturating_sub(tw + 1) + 1; // 1-char gutter
-    sp.push(Span::styled(type_text.to_string(), source_style(source, ctx.p)));
+    sp.push(Span::styled(
+        type_text.to_string(),
+        source_style(source, ctx.p),
+    ));
     sp.push(Span::raw(" ".repeat(pad)));
 
     sp.extend(col_spans(detail, &cols[2], ctx.query, ns, hl));
@@ -934,8 +979,365 @@ fn row_other(
     sp.extend(col_spans(ws, &cols[5], ctx.query, cs, hl));
     ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
 }
+
+/// A `port `/`pid ` status row: the lookup found something with no pane
+/// behind it (or nothing at all). Rendered dim so it reads as a footnote
+/// rather than a jump target; same Type/Detail/Context columns as an Other
+/// row, with the pane columns left empty.
+fn row_hint(
+    i: usize,
+    source: &OtherSource,
+    detail: &str,
+    reason: &str,
+    context: &str,
+    ctx: &RowCtx,
+) -> ListItem<'static> {
+    let hl = hl_style(ctx.sel, ctx.p);
+    let dim = Style::default().fg(if ctx.sel { ctx.p.text } else { ctx.p.overlay1 });
+    let red = Style::default().fg(ctx.p.red);
+
+    let rw = ctx.rw as u16;
+    let cols = Layout::horizontal(col_layout::OTHER)
+        .flex(Flex::Start)
+        .split(Rect::new(0, 0, rw, 1));
+
+    let mut sp = vec![num_span(i, ctx.sel, ctx.p)];
+
+    let type_col_w = cols[1].width as usize;
+    let type_text = source.label();
+    let tw = UnicodeWidthStr::width(type_text);
+    let pad = type_col_w.saturating_sub(tw + 1) + 1; // 1-char gutter
+    sp.push(Span::styled(
+        type_text.to_string(),
+        dim.add_modifier(Modifier::BOLD),
+    ));
+    sp.push(Span::raw(" ".repeat(pad)));
+
+    // The reason renders as a red ` (reason)` suffix inside the Detail
+    // column: reserve its width first so the suffix can never bleed into
+    // the Context column, however long `detail` is.
+    let suffix = format!(" ({reason})");
+    let suffix_w = UnicodeWidthStr::width(suffix.as_str());
+    let mut detail_col = cols[2];
+    detail_col.width = detail_col.width.saturating_sub(suffix_w as u16);
+    sp.extend(col_spans(detail, &detail_col, ctx.query, dim, hl));
+    sp.push(Span::styled(suffix, red));
+
+    sp.extend(col_spans(context, &cols[3], "", dim, hl));
+    ListItem::new(Line::from(sp)).style(row_sel_style(ctx.sel, ctx.p))
+}
 // min_terminal_size, content_rect, truncate_to, tab_label, centered_rect
 // are imported via `use crate::format::*;` at the top of this file.
+
+#[cfg(test)]
+mod status_hint_tests {
+    use super::*;
+    use crate::data::mock_nodes;
+    use crate::models::Keybindings;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+
+    /// Every word a hint may end on. A rendered bar that ends anywhere else was
+    /// cut through a key or a label.
+    const HINT_WORDS: [&str; 8] = [
+        "Go", "Close", "Filter", "Move", "Nav", "Focus", "Next", "Prev",
+    ];
+
+    /// A vim-style binding set — the only configuration that turns modes on.
+    fn vim_bindings() -> Keybindings {
+        Keybindings {
+            move_up: vec!["k".into()],
+            move_down: vec!["j".into()],
+            ..Default::default()
+        }
+    }
+
+    fn build_state(mode: InputMode, kb: Keybindings, query: &str) -> AppState {
+        let mut state = AppState::new(mock_nodes(), kb, CategoryTab::all().to_vec());
+        state.input_mode = mode;
+        state.search_query = query.into();
+        state
+    }
+
+    /// The `(mode, bindings)` pairs a user can actually be in: modes need a
+    /// printable navigation binding, the default keymap stays modeless.
+    fn reachable_modes() -> [(InputMode, Keybindings); 3] {
+        [
+            (InputMode::TypeToSearch, Keybindings::default()),
+            (InputMode::Navigation, vim_bindings()),
+            (InputMode::Filtering, vim_bindings()),
+        ]
+    }
+
+    /// Renders only the status strip of a `width`-column pane, so the assertions
+    /// are about the bar itself and not about popup geometry.
+    fn status(width: u16, mode: InputMode, kb: Keybindings) -> (String, Vec<Option<Color>>) {
+        let state = build_state(mode, kb, "");
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                let p = Palette::for_theme(None);
+                render_status_bar(frame, Rect::new(0, 0, width, 2), &p, &state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut line = String::new();
+        let mut fg = Vec::new();
+        for x in 0..width {
+            let cell = buf.cell((x, 1)).unwrap();
+            line.push_str(cell.symbol());
+            fg.push(cell.style().fg);
+        }
+        (line.trim_end().to_string(), fg)
+    }
+
+    /// Renders only the search row; also reports whether the frame asked the
+    /// backend to show a cursor and where.
+    fn search(width: u16, mode: InputMode, query: &str) -> (String, Option<Position>) {
+        let state = build_state(mode, Keybindings::default(), query);
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal.hide_cursor().unwrap();
+        terminal
+            .draw(|frame| {
+                let p = Palette::for_theme(None);
+                render_search(frame, &state, Rect::new(0, 0, width, 2), 1, 1, &p);
+            })
+            .unwrap();
+        let backend = terminal.backend();
+        let line = (0..width)
+            .map(|x| backend.buffer().cell((x, 0)).unwrap().symbol().to_string())
+            .collect::<String>()
+            .trim_end()
+            .to_string();
+        let cursor = backend.cursor_visible().then(|| backend.cursor_position());
+        (line, cursor)
+    }
+
+    #[test]
+    fn bar_carries_no_mode_tag() {
+        for width in [30u16, 60, 100] {
+            for (mode, kb) in reachable_modes() {
+                let (line, _) = status(width, mode, kb);
+                // A one-character tag reads as a truncated key name, so the bar
+                // starts on the first hint instead.
+                assert!(!line.starts_with('n'), "{mode:?} width={width}: {line:?}");
+                assert!(!line.starts_with('i'), "{mode:?} width={width}: {line:?}");
+                assert!(
+                    line.starts_with("  Enter "),
+                    "{mode:?} width={width}: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keys_are_accented_and_labels_are_dim() {
+        let p = Palette::for_theme(None);
+        let (line, fg) = status(60, InputMode::Navigation, vim_bindings());
+        assert!(line.starts_with("  Enter Go "), "{line:?}");
+        assert_eq!(&fg[2..7], &[Some(p.accent); 5][..], "{line:?}");
+        assert_eq!(&fg[8..10], &[Some(p.overlay0); 2][..], "{line:?}");
+    }
+
+    #[test]
+    fn hints_are_split_by_a_two_column_gutter() {
+        // One space would make `Go Esc Close` read as a single hint, so the gutter
+        // between hints stays wider than the space inside one.
+        for (mode, kb, expect) in [
+            (
+                InputMode::TypeToSearch,
+                Keybindings::default(),
+                "  Enter Focus  Esc Close",
+            ),
+            (
+                InputMode::Navigation,
+                vim_bindings(),
+                "  Enter Go  Esc Close",
+            ),
+            (
+                InputMode::Filtering,
+                vim_bindings(),
+                "  Enter Go  C-c Close",
+            ),
+        ] {
+            let (line, _) = status(90, mode, kb);
+            assert!(line.starts_with(expect), "{mode:?}: {line:?}");
+        }
+    }
+
+    #[test]
+    fn modeless_bar_keeps_the_classic_vocabulary() {
+        let (bar, _) = status(90, InputMode::TypeToSearch, Keybindings::default());
+        for hint in [
+            "Enter Focus",
+            "Esc Close",
+            "Tab Next",
+            "S-Tab Prev",
+            "Up/Down Move",
+        ] {
+            assert!(bar.contains(hint), "{bar:?}");
+        }
+        // Typing filters on the first keystroke, so nothing about modes belongs
+        // in this bar.
+        assert!(!bar.contains("Filter"), "{bar:?}");
+        assert!(!bar.contains("j/k"), "{bar:?}");
+    }
+
+    #[test]
+    fn wide_panes_keep_every_hint() {
+        let (nav, _) = status(90, InputMode::Navigation, vim_bindings());
+        for hint in ["Enter Go", "Esc Close", "k/j Move", "/ Filter"] {
+            assert!(nav.contains(hint), "{nav:?}");
+        }
+        let (filtering, _) = status(90, InputMode::Filtering, vim_bindings());
+        for hint in ["Enter Go", "C-c Close", "Esc Nav", "k/j Move"] {
+            assert!(filtering.contains(hint), "{filtering:?}");
+        }
+        // Categories are the tab strip's job, so no bar spends a column on them.
+        assert!(!nav.contains("Tab"), "{nav:?}");
+        assert!(!filtering.contains("Tab"), "{filtering:?}");
+    }
+
+    #[test]
+    fn navigation_names_only_the_configured_keys() {
+        // j/k move the list in navigation mode on top of the configured keys, but
+        // they stay unadvertised: only someone who bound letters in the config can
+        // be here, and that is the same person who read the README.
+        let kb = Keybindings {
+            move_down: vec!["j".into()],
+            ..Default::default()
+        };
+        let (nav, _) = status(90, InputMode::Navigation, kb);
+        assert!(nav.contains("Up/j Move"), "{nav:?}");
+        assert!(!nav.contains("j/k"), "{nav:?}");
+    }
+
+    #[test]
+    fn a_non_ascii_binding_is_packed_by_column_not_by_byte() {
+        // "←/→" is three columns in seven bytes, and those four spare bytes are
+        // enough to push `/ Filter` off a 41-column bar if the packing counts
+        // bytes instead of columns.
+        let kb = Keybindings {
+            move_up: vec!["←".into()],
+            move_down: vec!["→".into()],
+            ..Default::default()
+        };
+        let (line, _) = status(41, InputMode::Navigation, kb);
+        assert!(line.ends_with("/ Filter"), "{line:?}");
+    }
+
+    #[test]
+    fn narrow_panes_drop_whole_hints_never_cut_one_mid_word() {
+        let kb = Keybindings {
+            next_category: vec!["C-Space".into()],
+            dismiss: vec!["A-Meta-Backspace".into()],
+            move_up: vec!["k".into()],
+            move_down: vec!["j".into()],
+            ..Default::default()
+        };
+        for width in 20..=90 {
+            for mode in [
+                InputMode::TypeToSearch,
+                InputMode::Navigation,
+                InputMode::Filtering,
+            ] {
+                let (line, _) = status(width, mode, kb.clone());
+                let last = line.rsplit(' ').next().unwrap_or_default();
+                assert!(
+                    HINT_WORDS.contains(&last),
+                    "width={width} {mode:?} ends mid-hint: {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn narrower_bars_only_lose_whole_hints_from_the_tail() {
+        let kb = Keybindings {
+            next_category: vec!["A-Rather-Long-Binding".into()],
+            move_up: vec!["k".into()],
+            move_down: vec!["j".into()],
+            ..Default::default()
+        };
+        for (mode, _) in reachable_modes() {
+            let widest = status(200, mode, kb.clone()).0;
+            for width in 20..=200 {
+                let (line, _) = status(width, mode, kb.clone());
+                assert!(
+                    widest.starts_with(&line),
+                    "width={width} {mode:?} reordered or cut: {line:?} vs {widest:?}"
+                );
+            }
+        }
+    }
+
+    /// The prompt glyph is what tells the filter and the modes apart; the row
+    /// itself never spends columns on a name for the mode.
+    fn prompt_color(mode: InputMode, query: &str) -> Option<Color> {
+        let state = build_state(mode, Keybindings::default(), query);
+        let mut terminal = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                let p = Palette::for_theme(None);
+                render_search(frame, &state, Rect::new(0, 0, 40, 2), 1, 1, &p);
+            })
+            .unwrap();
+        terminal.backend().buffer().cell((1, 0)).unwrap().style().fg
+    }
+
+    #[test]
+    fn prompt_stays_three_columns_and_only_its_color_shows_the_mode() {
+        let p = Palette::for_theme(None);
+        for mode in [
+            InputMode::TypeToSearch,
+            InputMode::Navigation,
+            InputMode::Filtering,
+        ] {
+            let (line, _) = search(40, mode, "her");
+            assert!(line.starts_with(" > her"), "{mode:?}: {line:?}");
+            assert!(!line.contains("NAV"), "{mode:?}: {line:?}");
+            assert!(!line.contains("FILTER"), "{mode:?}: {line:?}");
+        }
+
+        // The modeless prompt is styled exactly like the row text, so a default
+        // install keeps the pre-mode appearance byte for byte.
+        assert_eq!(prompt_color(InputMode::TypeToSearch, "her"), Some(p.text));
+        assert_eq!(prompt_color(InputMode::TypeToSearch, ""), Some(p.overlay0));
+        assert_eq!(prompt_color(InputMode::Filtering, "her"), Some(p.accent));
+        assert_eq!(prompt_color(InputMode::Navigation, "her"), Some(p.overlay0));
+    }
+
+    #[test]
+    fn empty_prompt_only_prompts_for_slash_in_navigation_mode() {
+        for mode in [InputMode::TypeToSearch, InputMode::Filtering] {
+            let (line, _) = search(40, mode, "");
+            assert!(line.contains("type to filter..."), "{mode:?}: {line:?}");
+        }
+        let (nav, _) = search(40, InputMode::Navigation, "");
+        assert!(nav.contains("type / to filter"), "{nav:?}");
+        assert!(!nav.contains("type to filter"), "{nav:?}");
+    }
+
+    #[test]
+    fn cursor_sits_at_the_insertion_point_only_while_filtering() {
+        let (_, modeless) = search(40, InputMode::TypeToSearch, "her");
+        assert_eq!(modeless, None, "modeless typing keeps the cursor hidden");
+
+        let (_, nav_cursor) = search(40, InputMode::Navigation, "her");
+        assert_eq!(nav_cursor, None, "navigation must leave the cursor hidden");
+
+        let (_, filtering_cursor) = search(40, InputMode::Filtering, "her");
+        assert_eq!(filtering_cursor, Some(Position { x: 6, y: 0 }));
+
+        let (_, empty) = search(40, InputMode::Filtering, "");
+        assert_eq!(empty, Some(Position { x: 3, y: 0 }));
+
+        // A query wider than the pane must not push the cursor off the popup.
+        let (_, overflow) = search(10, InputMode::Filtering, &"x".repeat(40));
+        assert_eq!(overflow, Some(Position { x: 9, y: 0 }));
+    }
+}
 
 #[cfg(test)]
 mod palette_tests {

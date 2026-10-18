@@ -2,6 +2,8 @@
 //!
 //! Only pure, unit-testable functions — no IPC, no rendering.
 
+use std::collections::{HashMap, HashSet};
+
 /// SSH-family binaries whose first positional argument is a login target.
 const SSH_BINS: &[&str] = &["ssh", "mosh", "rsh", "rlogin", "tssh"];
 
@@ -332,6 +334,107 @@ pub fn content_excerpt(content: &str, needle: &str) -> Option<String> {
     Some(excerpt_around(content, pos, needle.chars().count()))
 }
 
+// ── pid/port locator helpers ────────────────────────────────────────────────
+//
+// Backing for the All tab's `port `/`pid ` filters: parse the OS process
+// table and the listening-socket table, then attribute an arbitrary pid to
+// the pane whose shell started it.
+
+/// One row of `ps -eo pid=,ppid=,command=` output.
+pub struct PsRow {
+    pub pid: u32,
+    pub ppid: Option<u32>,
+    pub command: String,
+}
+
+/// Split the first whitespace-delimited token off `s`, returning the token
+/// and the rest (leading whitespace of the rest removed). Runs of spaces —
+/// how `ps` pads its columns — are treated as one separator.
+fn split_front_token(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    match s.find(char::is_whitespace) {
+        Some(i) => (&s[..i], s[i..].trim_start()),
+        None => (s, ""),
+    }
+}
+
+/// Parse `ps -eo pid=,ppid=,command=` output (headers suppressed). Lines
+/// without a parseable pid are skipped; a missing or unparseable ppid leaves
+/// `ppid` `None`, and an empty command stays an empty string.
+pub fn parse_ps_table(out: &str) -> Vec<PsRow> {
+    out.lines()
+        .filter_map(|line| {
+            let (pid_text, rest) = split_front_token(line);
+            let pid = pid_text.parse::<u32>().ok()?;
+            let (ppid_text, command) = split_front_token(rest);
+            let ppid = ppid_text.parse::<u32>().ok();
+            Some(PsRow {
+                pid,
+                ppid,
+                command: command.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Parse `lsof -nP -iTCP -sTCP:LISTEN -F pn` output into `(port, pid, addr)`
+/// triples. Record layout: a `p<pid>` line introduces a process, then one
+/// `f<fd>` + `n<addr>` pair per of its sockets; the port is the text after
+/// the last `:` of the address (`*:3000`, `[::1]:8080`). The same socket is
+/// often listed twice (IPv4 + IPv6), so duplicate triples are collapsed.
+/// lsof exits non-zero with no output when nothing listens — the caller
+/// treats that as an empty table, not an error.
+pub fn parse_lsof_ports(out: &str) -> Vec<(u16, u32, String)> {
+    let mut rows: Vec<(u16, u32, String)> = Vec::new();
+    let mut seen: HashSet<(u16, u32, String)> = HashSet::new();
+    let mut cur_pid: Option<u32> = None;
+    for line in out.lines() {
+        if let Some(pid_text) = line.strip_prefix('p') {
+            cur_pid = pid_text.parse().ok();
+        } else if let Some(addr) = line.strip_prefix('n')
+            && let Some(pid) = cur_pid
+            // An address always carries `host:port` — a colonless token is
+            // not an address and must not parse as a port.
+            && let Some((_, port_text)) = addr.rsplit_once(':')
+            && let Ok(port) = port_text.parse::<u16>()
+            && seen.insert((port, pid, addr.to_string()))
+        {
+            rows.push((port, pid, addr.to_string()));
+        }
+    }
+    rows
+}
+
+/// Find the pane containing `target`: walk the target's parent chain (via
+/// `ppid_of`, pid → parent pid) until it reaches a pid in `pane_shells`
+/// (pane shell pid → pane id). A target that IS a pane shell matches
+/// directly. `None` when the chain ends without hitting a pane shell —
+/// the process was daemonized out of its pane, or belongs to nothing
+/// Herdr started.
+pub fn pane_for_pid(
+    target: u32,
+    ppid_of: &HashMap<u32, u32>,
+    pane_shells: &HashMap<u32, String>,
+) -> Option<String> {
+    if let Some(pane) = pane_shells.get(&target) {
+        return Some(pane.clone());
+    }
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut cur = target;
+    loop {
+        let ppid = *ppid_of.get(&cur)?;
+        if let Some(pane) = pane_shells.get(&ppid) {
+            return Some(pane.clone());
+        }
+        // Cycle guard — ps tables are acyclic, but /proc is user-readable
+        // enough not to bet the UI on it.
+        if !seen.insert(cur) {
+            return None;
+        }
+        cur = ppid;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +734,119 @@ mod tests {
         assert_eq!(parse_editor_target("nvim"), None);
         assert_eq!(parse_editor_target("hx"), None);
         assert_eq!(parse_editor_target(""), None);
+    }
+
+    // ── parse_ps_table ──
+
+    #[test]
+    fn parses_ps_rows_with_leading_padding_and_command() {
+        let out = "    1     0 /sbin/launchd\n  5724  5700 /bin/zsh -l\n";
+        let rows = parse_ps_table(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pid, 1);
+        assert_eq!(rows[0].ppid, Some(0));
+        assert_eq!(rows[0].command, "/sbin/launchd");
+        assert_eq!(rows[1].pid, 5724);
+        assert_eq!(rows[1].command, "/bin/zsh -l");
+    }
+
+    #[test]
+    fn ps_rows_with_bad_fields_are_skipped() {
+        let out = "not-a-pid 1 cmd\n12 not-a-ppid cmd\n   \n42 7\n";
+        let rows = parse_ps_table(out);
+        // Line 1 has no pid → dropped. Line 2 parses (unparseable ppid →
+        // None). Blank line dropped. Line 4 parses with an empty command.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pid, 12);
+        assert_eq!(rows[0].ppid, None);
+        assert_eq!(rows[0].command, "cmd");
+        assert_eq!(rows[1].pid, 42);
+        assert_eq!(rows[1].ppid, Some(7));
+        assert_eq!(rows[1].command, "");
+    }
+
+    // ── parse_lsof_ports ──
+
+    #[test]
+    fn parses_lsof_records_and_collapses_duplicates() {
+        let out = concat!(
+            "p1126\nf15\nn*:51629\nf16\nn*:51629\n", // same socket twice
+            "p1337\nf11\nn*:7000\nf12\nn127.0.0.1:5000\n",
+        );
+        assert_eq!(
+            parse_lsof_ports(out),
+            vec![
+                (51629, 1126, "*:51629".to_string()),
+                (7000, 1337, "*:7000".to_string()),
+                (5000, 1337, "127.0.0.1:5000".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lsof_ipv6_address_port_and_junk_lines() {
+        let out = "p99\nf3\nn[::1]:8080\nq-junk\nn12345\npnotapid\nn*:1\n";
+        // `n12345` has no colon-port; the trailing pair belongs to no process.
+        assert_eq!(
+            parse_lsof_ports(out),
+            vec![(8080, 99, "[::1]:8080".to_string())]
+        );
+    }
+
+    #[test]
+    fn lsof_empty_output_yields_no_rows() {
+        assert!(parse_lsof_ports("").is_empty());
+    }
+
+    // ── pane_for_pid ──
+
+    fn chain() -> (HashMap<u32, u32>, HashMap<u32, String>) {
+        // herdr(100) → shell(200, pane "p1") → npm(300) → vite(400)
+        //            → shell(210, pane "p2")
+        let mut ppid_of = HashMap::new();
+        ppid_of.insert(400, 300);
+        ppid_of.insert(300, 200);
+        ppid_of.insert(200, 100);
+        ppid_of.insert(210, 100);
+        let mut pane_shells = HashMap::new();
+        pane_shells.insert(200, "p1".to_string());
+        pane_shells.insert(210, "p2".to_string());
+        (ppid_of, pane_shells)
+    }
+
+    #[test]
+    fn pane_shell_matches_directly() {
+        let (ppid_of, pane_shells) = chain();
+        assert_eq!(
+            pane_for_pid(200, &ppid_of, &pane_shells),
+            Some("p1".to_string())
+        );
+    }
+
+    #[test]
+    fn descendant_walks_up_to_the_pane_shell() {
+        let (ppid_of, pane_shells) = chain();
+        assert_eq!(
+            pane_for_pid(400, &ppid_of, &pane_shells),
+            Some("p1".to_string())
+        );
+    }
+
+    #[test]
+    fn process_outside_every_pane_returns_none() {
+        let (ppid_of, pane_shells) = chain();
+        // pid 1 has no ppid entry (chain ends) and is no pane shell.
+        assert_eq!(pane_for_pid(1, &ppid_of, &pane_shells), None);
+        // Unknown pid: not in the table at all.
+        assert_eq!(pane_for_pid(999, &ppid_of, &pane_shells), None);
+    }
+
+    #[test]
+    fn parent_cycle_is_broken_not_looped() {
+        let mut ppid_of = HashMap::new();
+        ppid_of.insert(10, 11);
+        ppid_of.insert(11, 10);
+        let pane_shells = HashMap::new();
+        assert_eq!(pane_for_pid(10, &ppid_of, &pane_shells), None);
     }
 }
